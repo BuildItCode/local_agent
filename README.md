@@ -17,7 +17,8 @@ Give your ollama llm agentic capabilities.
 # Linux
 curl -fsSL https://ollama.ai/install.sh | sh
 
-# Windows / macOS: Download from https://ollama.ai/download
+# Windows / macOS:
+Download from https://ollama.ai/download
 ```
 
 ### 2. Install and Run
