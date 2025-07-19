@@ -247,33 +247,62 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
         // Execute shell commands
         this.tools.set('execute_command', {
             description: 'Execute shell commands in the terminal',
-            parameters: {command: 'string', timeout: 'number (optional, default 30000ms)'},
+            parameters: {command: 'string', timeout: 'number (optional, default 60000ms)'},
             handler: async (params) => {
-                const {command, timeout = 30000} = params;
+                const {command, timeout = 60000} = params; // Increased timeout for long commands
 
                 console.log(`🔧 Executing: ${command}`);
 
-                return new Promise((resolve, reject) => {
+                return new Promise((resolve) => {
                     const child = exec(command, {
                         cwd: this.workingDirectory,
                         timeout: timeout,
-                        maxBuffer: 1024 * 1024 // 1MB buffer
+                        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large outputs
+                        env: {...process.env, FORCE_COLOR: '0'} // Disable colors for cleaner output
                     }, (error, stdout, stderr) => {
                         if (error) {
-                            resolve({
-                                success: false,
-                                error: error.message,
-                                stdout: stdout || '',
-                                stderr: stderr || '',
-                                command: command
-                            });
+                            // Check if it's a timeout error
+                            if (error.killed && error.signal === 'SIGTERM') {
+                                resolve({
+                                    success: false,
+                                    error: `Command timed out after ${timeout}ms`,
+                                    stdout: stdout || '',
+                                    stderr: stderr || '',
+                                    command: command
+                                });
+                            } else {
+                                resolve({
+                                    success: false,
+                                    error: error.message,
+                                    stdout: stdout || '',
+                                    stderr: stderr || '',
+                                    command: command,
+                                    exitCode: error.code
+                                });
+                            }
                         } else {
                             resolve({
                                 success: true,
                                 stdout: stdout || '',
                                 stderr: stderr || '',
-                                command: command
+                                command: command,
+                                message: 'Command executed successfully'
                             });
+                        }
+                    });
+
+                    // Show progress for long-running commands
+                    let progressTimer;
+                    if (command.includes('npx') || command.includes('npm install') || command.includes('git clone')) {
+                        progressTimer = setInterval(() => {
+                            process.stdout.write('.');
+                        }, 2000);
+                    }
+
+                    child.on('close', () => {
+                        if (progressTimer) {
+                            clearInterval(progressTimer);
+                            console.log(''); // New line after progress dots
                         }
                     });
                 });
@@ -529,22 +558,19 @@ Please provide a brief, natural language summary of what was accomplished. Be co
                 const followUpData = await followUpResponse.json();
                 assistantMessage = followUpData.message.content;
             } else {
-                // If no tool was used but the user seemed to request an action, remind about tool usage
+                // If no tool was used but message seems like an action request, try retry
                 if (this.seemsLikeActionRequest(message) && !this.containsToolCall(assistantMessage)) {
-                    console.log('\n⚠️  No tool was used. The AI should have used tools for this request.');
-                    console.log('🔄 Trying again with more explicit instructions...');
+                    console.log('\n⚠️  No tool was used. Trying again with explicit instructions...');
 
                     const retryPrompt = `The user said: "${message}"
 
-This seems like a request for action. You MUST use the appropriate tool to perform this action immediately. Do not explain how to do it - actually do it using the tools.
+This requires action. You MUST use the appropriate tool immediately. Do not explain - actually do it.
 
-Respond ONLY with the appropriate tool call in JSON format.`;
+Respond ONLY with the tool call in JSON format like: {"tool": "tool_name", "parameters": {"param": "value"}}`;
 
                     const retryResponse = await fetch(`${this.baseUrl}/api/chat`, {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
+                        headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
                             model: this.model,
                             messages: [
@@ -552,9 +578,7 @@ Respond ONLY with the appropriate tool call in JSON format.`;
                                 {role: 'user', content: retryPrompt}
                             ],
                             stream: false,
-                            options: {
-                                temperature: 0.05, // Even lower temperature
-                            }
+                            options: {temperature: 0.05}
                         }),
                     });
 
@@ -563,9 +587,12 @@ Respond ONLY with the appropriate tool call in JSON format.`;
 
                     if (retryToolResult) {
                         assistantMessage = `Successfully executed the requested action.`;
+                    } else {
+                        assistantMessage = `I understand you want me to: ${message}. However, I had trouble executing the appropriate tool. Please try rephrasing your request.`;
                     }
                 }
             }
+
 
             // Update conversation history
             this.conversationHistory.push({role: 'user', content: message});
@@ -586,14 +613,13 @@ Respond ONLY with the appropriate tool call in JSON format.`;
             'list', 'show', 'display', 'read', 'open',
             'delete', 'remove', 'move', 'copy', 'rename',
             'cd', 'ls', 'cat', 'touch', 'mkdir',
-            'npm', 'git', 'pip', 'yarn', 'node'
+            'npm', 'git', 'pip', 'yarn', 'node', 'npx'
         ];
 
         const lowerMessage = message.toLowerCase();
         return actionWords.some(word => lowerMessage.includes(word));
     }
 
-    // Helper function to check if response contains a tool call
     containsToolCall(response) {
         return response.includes('"tool"') && response.includes('"parameters"');
     }
@@ -621,7 +647,10 @@ Respond ONLY with the appropriate tool call in JSON format.`;
                 }
             }
 
-            if (!jsonMatch) return null;
+            if (!jsonMatch) {
+                console.log('⚠️  No valid tool call found in response');
+                return null;
+            }
 
             const toolCall = JSON.parse(jsonMatch[0]);
 
@@ -649,16 +678,28 @@ Respond ONLY with the appropriate tool call in JSON format.`;
 
             if (result.success) {
                 console.log(`✅ Tool executed successfully`);
+                // Show command output if available
+                if (result.stdout) {
+                    console.log(`📤 Output: ${result.stdout}`);
+                }
+                if (result.stderr && result.stderr.trim()) {
+                    console.log(`⚠️  Warnings: ${result.stderr}`);
+                }
             } else {
                 console.log(`❌ Tool execution failed: ${result.error}`);
+                if (result.stderr) {
+                    console.log(`📤 Error output: ${result.stderr}`);
+                }
             }
 
             return result;
         } catch (e) {
             console.log(`⚠️  Error parsing tool call: ${e.message}`);
+            console.log(`📝 Raw response: ${response.substring(0, 200)}...`);
             return null;
         }
     }
+
 
     async startInteractiveMode() {
         // Check connection first
@@ -870,12 +911,12 @@ Respond ONLY with the appropriate tool call in JSON format.`;
 
                         default:
                             console.log('❌ Invalid choice. Please try again.');
-                            askForChoice();
+                            await askForChoice();
                     }
                 });
             };
 
-            askForChoice();
+            await askForChoice();
         });
     }
 
@@ -920,14 +961,14 @@ Respond ONLY with the appropriate tool call in JSON format.`;
                     if (choiceNum === 0) {
                         // Go to parent directory
                         currentPath = path.dirname(currentPath);
-                        showDirectory();
+                        await showDirectory();
                     } else if (choiceNum >= 1 && choiceNum <= directories.length) {
                         // Go to selected directory
                         currentPath = path.join(currentPath, directories[choiceNum - 1].name);
-                        showDirectory();
+                        await showDirectory();
                     } else {
                         console.log('❌ Invalid choice. Please try again.');
-                        showDirectory();
+                        await showDirectory();
                     }
                 });
 
@@ -935,11 +976,11 @@ Respond ONLY with the appropriate tool call in JSON format.`;
                 console.log(`❌ Error reading directory: ${error.message}`);
                 console.log('Returning to parent directory...');
                 currentPath = path.dirname(currentPath);
-                showDirectory();
+                await showDirectory();
             }
         };
 
-        showDirectory();
+        await showDirectory();
     }
 
     async saveWorkingDirectoryToConfig() {

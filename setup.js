@@ -179,39 +179,25 @@ async function displayAvailableModels() {
 
     const recommendedModels = [
         {
-            name: 'codellama',
+            name: 'qwen3',
             description: 'Best for coding tasks and programming',
-            size: '~3.8GB',
-            command: 'ollama pull codellama',
+            size: '~5.2GB',
+            command: 'ollama pull qwen3:8b',
             useCase: 'Perfect for: JavaScript, Python, React, debugging, code generation'
         },
         {
-            name: 'llama2',
+            name: 'llama3.2',
             description: 'General purpose, excellent for conversations',
-            size: '~3.8GB',
-            command: 'ollama pull llama2',
+            size: '~2.0GB',
+            command: 'ollama pull llama3.3:latest',
             useCase: 'Perfect for: Writing, analysis, general questions, explanations'
         },
         {
-            name: 'mistral',
-            description: 'Fast and efficient, good balance',
-            size: '~4.1GB',
-            command: 'ollama pull mistral',
-            useCase: 'Perfect for: Quick responses, balanced performance, general tasks'
-        },
-        {
-            name: 'phi',
-            description: 'Lightweight model, fastest responses',
-            size: '~1.6GB',
-            command: 'ollama pull phi',
-            useCase: 'Perfect for: Quick tasks, limited resources, fast iteration'
-        },
-        {
-            name: 'deepseek-coder',
-            description: 'Specialized coding model',
-            size: '~3.8GB',
-            command: 'ollama pull deepseek-coder',
-            useCase: 'Perfect for: Advanced coding, algorithms, code optimization'
+            name: 'Gemma3n',
+            description: 'General purpose, balanced',
+            size: '~7.5GB',
+            command: 'ollama pull gemma3n:latest',
+            useCase: 'Gemini 1.5 pro like performance'
         }
     ];
 
@@ -223,9 +209,8 @@ async function displayAvailableModels() {
     });
 
     console.log('\n💡 Recommendations:');
-    console.log('   🔧 For coding projects → codellama or deepseek-coder');
-    console.log('   💬 For general use → llama2 or mistral');
-    console.log('   ⚡ For speed/resources → phi');
+    console.log('   🔧 For coding projects → qwen3');
+    console.log('   💬 For general use → llama3.2');
 }
 
 async function selectModel(models) {
@@ -238,9 +223,9 @@ async function selectModel(models) {
         let description = '';
         const modelName = model.name.toLowerCase();
 
-        if (modelName.includes('codellama')) {
+        if (modelName.includes('codellama') || modelName.includes('qwen3')) {
             description = ' - 🔧 Best for coding';
-        } else if (modelName.includes('llama2')) {
+        } else if (modelName.includes('llama')) {
             description = ' - 💬 Great for conversations';
         } else if (modelName.includes('mistral')) {
             description = ' - ⚡ Fast and efficient';
@@ -254,7 +239,7 @@ async function selectModel(models) {
 
         const modified = new Date(model.modified).toLocaleDateString();
         console.log(`   ${index + 1}. ${model.name} (${model.sizeGB}GB)${description}`);
-        console.log(`      📅 Last used: ${modified}`);
+        console.log(`      📅 Last used: ${modified} \n`);
     });
 
     console.log(`\n   ${models.length + 1}. 📥 Install a new model`);
@@ -279,7 +264,7 @@ async function selectModel(models) {
 async function installNewModel() {
     await displayAvailableModels();
 
-    const modelName = await askQuestion('\n📥 Enter the model name to install (e.g., codellama): ');
+    const modelName = await askQuestion('\n📥 Enter the model name to install (e.g., qwen3): ');
 
     if (!modelName.trim()) {
         console.log('❌ No model name provided');
@@ -440,507 +425,6 @@ async function updatePackageJson(newFileName, baseModelName, fullModelName) {
     }
 }
 
-async function createExampleFiles() {
-    console.log('\n📁 Creating example files...');
-
-    try {
-        await fs.mkdir('examples', {recursive: true});
-
-        const exampleScript = `#!/usr/bin/env node
-
-/**
- * Terminal LLM Agent Example
- * 
- * This example demonstrates how to use the Terminal LLM Agent programmatically.
- * It automatically detects the correct agent file (renamed or original).
- */
-
-const fs = require('fs');
-const path = require('path');
-
-// Find the agent file (could be terminal-agent.js or model-specific)
-function findAgentFile() {
-  console.log('🔍 Looking for agent file...');
-  
-  const files = fs.readdirSync('..');
-  const agentFiles = files.filter(file => file.endsWith('-agent.js'));
-  
-  if (agentFiles.length > 0) {
-    console.log(\`✅ Found model-specific agent: \${agentFiles[0]}\`);
-    return agentFiles[0];
-  }
-  
-  if (fs.existsSync('../terminal-agent.js')) {
-    console.log('✅ Found generic terminal-agent.js');
-    return 'terminal-agent.js';
-  }
-  
-  throw new Error('❌ No agent file found. Please run setup first.');
-}
-
-async function runExample() {
-  console.log('🚀 Terminal LLM Agent Example');
-  console.log('=============================\\n');
-  
-  try {
-    const agentFile = findAgentFile();
-    const { TerminalLLMAgent } = require(\`../\${agentFile}\`);
-
-    // Create agent instance
-    const agent = new TerminalLLMAgent({
-      workingDirectory: process.cwd()
-    });
-
-    console.log('🤖 Agent initialized successfully!');
-    console.log(\`📁 Working directory: \${process.cwd()}\`);
-    console.log('\\n⏳ Running example tasks...\\n');
-    
-    // Example 1: Create a file
-    console.log('📝 Task 1: Creating a hello.txt file...');
-    await agent.executeCommand('Create a hello.txt file with the content "Hello from AI! This is a test file created by the Terminal LLM Agent."');
-    
-    // Example 2: List directory contents
-    console.log('\\n📋 Task 2: Listing files in current directory...');
-    await agent.executeCommand('List the files in this directory and show their details');
-    
-    // Example 3: Read the file we just created
-    console.log('\\n📖 Task 3: Reading the hello.txt file...');
-    await agent.executeCommand('Show me the contents of hello.txt');
-    
-    // Example 4: Create a simple script
-    console.log('\\n🐍 Task 4: Creating a Python script...');
-    await agent.executeCommand('Create a simple Python script called greet.py that asks for a name and prints a greeting');
-    
-    console.log('\\n✅ All example tasks completed successfully!');
-    console.log('\\n💡 Try running the agent interactively:');
-    console.log(\`   node ../\${agentFile}\`);
-    console.log('   npm start');
-    
-  } catch (error) {
-    console.error('❌ Example failed:', error.message);
-    console.log('\\n🔧 Troubleshooting tips:');
-    console.log('   1. Make sure Ollama is running: ollama serve');
-    console.log('   2. Check if you have a model installed: ollama list');
-    console.log('   3. Run setup again: npm run setup');
-    process.exit(1);
-  }
-}
-
-// Handle cleanup on exit
-process.on('SIGINT', () => {
-  console.log('\\n👋 Example interrupted by user');
-  process.exit(0);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('\\n💥 Unexpected error:', error.message);
-  process.exit(1);
-});
-
-// Run the example
-runExample();
-`;
-
-        await fs.writeFile('examples/basic-example.js', exampleScript);
-
-        // Create advanced example
-        const advancedExample = `#!/usr/bin/env node
-
-/**
- * Advanced Terminal LLM Agent Example
- * 
- * This example shows more advanced usage patterns including:
- * - Error handling
- * - Multiple commands
- * - Working with different file types
- */
-
-const fs = require('fs');
-const path = require('path');
-
-function findAgentFile() {
-  const files = fs.readdirSync('..');
-  const agentFiles = files.filter(file => file.endsWith('-agent.js'));
-  
-  if (agentFiles.length > 0) {
-    return agentFiles[0];
-  }
-  
-  if (fs.existsSync('../terminal-agent.js')) {
-    return 'terminal-agent.js';
-  }
-  
-  throw new Error('No agent file found');
-}
-
-async function advancedExample() {
-  console.log('🧪 Advanced Terminal LLM Agent Example');
-  console.log('======================================\\n');
-  
-  try {
-    const agentFile = findAgentFile();
-    const { TerminalLLMAgent } = require(\`../\${agentFile}\`);
-
-    const agent = new TerminalLLMAgent({
-      workingDirectory: process.cwd()
-    });
-
-    // Project setup example
-    console.log('🏗️  Setting up a sample project...');
-    
-    await agent.executeCommand('Create a package.json file for a new Node.js project called "my-awesome-app" with express as a dependency');
-    
-    await agent.executeCommand('Create an app.js file with a basic Express.js server that serves a "Hello World" message on port 3000');
-    
-    await agent.executeCommand('Create a README.md file explaining how to run this Express.js application');
-    
-    console.log('\\n📊 Analyzing what we created...');
-    await agent.executeCommand('List all files we just created and show their sizes');
-    
-    console.log('\\n📖 Reading our README...');
-    await agent.executeCommand('Show me the contents of the README.md file');
-    
-    console.log('\\n✅ Advanced example completed!');
-    
-  } catch (error) {
-    console.error('❌ Advanced example failed:', error.message);
-  }
-}
-
-advancedExample();
-`;
-
-        await fs.writeFile('examples/advanced-example.js', advancedExample);
-
-        // Create project templates example
-        const templatesExample = `#!/usr/bin/env node
-
-/**
- * Project Templates Example
- * 
- * Shows how to use the agent to create different types of projects
- */
-
-const fs = require('fs');
-
-function findAgentFile() {
-  const files = fs.readdirSync('..');
-  const agentFiles = files.filter(file => file.endsWith('-agent.js'));
-  return agentFiles[0] || 'terminal-agent.js';
-}
-
-async function createProjectTemplate(type) {
-  const agentFile = findAgentFile();
-  const { TerminalLLMAgent } = require(\`../\${agentFile}\`);
-  
-  const agent = new TerminalLLMAgent({
-    workingDirectory: process.cwd()
-  });
-  
-  console.log(\`🎯 Creating \${type} project template...\\n\`);
-  
-  switch (type) {
-    case 'react':
-      await agent.executeCommand('Create a basic React project structure with package.json, App.js, and index.html');
-      break;
-    case 'python':
-      await agent.executeCommand('Create a Python project with main.py, requirements.txt, and README.md files');
-      break;
-    case 'express':
-      await agent.executeCommand('Create an Express.js API project with proper folder structure including routes, middleware, and config files');
-      break;
-    default:
-      console.log('Unknown template type');
-  }
-}
-
-// Get template type from command line argument
-const templateType = process.argv[2] || 'express';
-createProjectTemplate(templateType);
-`;
-
-        await fs.writeFile('examples/project-templates.js', templatesExample);
-
-        // Make all examples executable
-        await fs.chmod('examples/basic-example.js', 0o755);
-        await fs.chmod('examples/advanced-example.js', 0o755);
-        await fs.chmod('examples/project-templates.js', 0o755);
-
-        console.log('✅ Created example files:');
-        console.log('   📄 examples/basic-example.js');
-        console.log('   🧪 examples/advanced-example.js');
-        console.log('   🎯 examples/project-templates.js');
-
-    } catch (error) {
-        console.log(`⚠️  Could not create example files: ${error.message}`);
-    }
-}
-
-async function createReadme(selectedModel) {
-    console.log('📝 Creating comprehensive README...');
-
-    const baseModelName = selectedModel ? selectedModel.split(':')[0].toLowerCase() : 'terminal';
-    const agentFileName = selectedModel ? `${baseModelName}-agent.js` : 'terminal-agent.js';
-    const modelDisplayName = baseModelName.charAt(0).toUpperCase() + baseModelName.slice(1);
-
-    // Helper function for model optimizations
-    function getModelOptimization(modelName) {
-        const optimizations = {
-            codellama: 'Coding tasks, debugging, code generation, technical documentation',
-            llama2: 'General conversation, writing, analysis, explanations',
-            mistral: 'Balanced performance, quick responses, general tasks',
-            phi: 'Fast responses, lightweight operations, resource efficiency',
-            'deepseek-coder': 'Advanced coding, algorithms, code optimization',
-            gemma: 'Google-optimized tasks, research, analysis'
-        };
-
-        return optimizations[modelName] || 'General purpose tasks';
-    }
-
-    // Helper function for detailed model optimizations
-    function getModelOptimizations(modelName) {
-        const details = {
-            codellama: `
-- **Temperature**: Lower for consistent code generation
-- **Context**: Optimized for programming languages and frameworks
-- **Tools**: Enhanced file operations for development workflows
-- **Prompting**: Structured for technical precision`,
-
-            llama2: `
-- **Temperature**: Balanced for creative and analytical tasks
-- **Context**: Optimized for natural language understanding
-- **Tools**: Enhanced for document creation and analysis
-- **Prompting**: Conversational and helpful tone`,
-
-            mistral: `
-- **Temperature**: Optimized for quick, accurate responses
-- **Context**: Efficient context handling for speed
-- **Tools**: Streamlined for fast operations
-- **Prompting**: Direct and efficient communication`,
-
-            phi: `
-- **Temperature**: Lightweight configuration for speed
-- **Context**: Minimal context for resource efficiency
-- **Tools**: Essential tools only for performance
-- **Prompting**: Concise and to-the-point`,
-
-            'deepseek-coder': `
-- **Temperature**: Very low for precise code generation
-- **Context**: Deep understanding of complex algorithms
-- **Tools**: Advanced code analysis and optimization
-- **Prompting**: Technical precision and best practices`
-        };
-
-        return details[modelName] || '- **Configuration**: Standard optimizations for general use';
-    }
-
-    const readme = `# ${modelDisplayName} Terminal Agent
-
-An AI assistant powered by ${selectedModel || 'Ollama'} with terminal and file system access.
-
-## 🚀 Quick Start
-
-\`\`\`bash
-# Start the agent
-npm start
-
-# Or run directly
-node ${agentFileName}
-
-# Run examples
-node examples/basic-example.js
-\`\`\`
-
-## ✨ Features
-
-- 🤖 **AI-Powered Commands**: Natural language to terminal actions
-- 📁 **File Operations**: Create, read, modify files securely
-- 💻 **Command Execution**: Run any terminal command safely
-- 🔄 **Interactive Mode**: Conversational interface
-- 📂 **Directory Management**: Smart working directory selection
-- 🛡️ **Security**: Sandboxed operations, path validation
-- ⚡ **Model Optimized**: Customized for ${modelDisplayName}
-
-## 📋 Available Commands
-
-### NPM Scripts
-\`\`\`bash
-npm start                 # Start the agent
-npm run start:${baseModelName}    # Model-specific start
-npm run setup            # Re-run setup wizard
-npm run debug            # Debug Ollama/models
-\`\`\`
-
-### Direct Execution
-\`\`\`bash
-node ${agentFileName}                    # Interactive mode
-node ${agentFileName} "create a file"    # Single command
-node ${agentFileName} --help            # Show help
-\`\`\`
-
-## 🎯 Usage Examples
-
-### Interactive Mode
-\`\`\`bash
-npm start
-
-# Then try commands like:
-# "Create a package.json for a React project"
-# "List all JavaScript files in this directory"
-# "Run npm install to install dependencies"
-# "Create a Python script that calculates fibonacci numbers"
-# "Show me the contents of package.json"
-\`\`\`
-
-### Single Commands
-\`\`\`bash
-node ${agentFileName} "create a hello.txt file with a greeting"
-node ${agentFileName} "initialize a git repository and make first commit"
-node ${agentFileName} "create a basic Express.js server"
-\`\`\`
-
-## 🛠️ Interactive Commands
-
-While in interactive mode, you can use these special commands:
-
-| Command | Description |
-|---------|-------------|
-| \`help\` | Show all available commands |
-| \`exit\` | Quit the agent |
-| \`pwd\` | Show current directory |
-| \`cd\` | Change working directory |
-| \`model\` | Show current model info |
-| \`models\` | List all available models |
-| \`switch\` | Switch to different model |
-| \`history\` | Show conversation history |
-| \`clear\` | Clear the screen |
-
-## 📁 Directory Selection
-
-On first run, the agent offers multiple ways to select your working directory:
-
-1. **Use Current Directory** - Work in the current location
-2. **Enter Custom Path** - Type any directory path
-3. **Browse from Home** - Navigate from your home directory
-4. **Browse from Root** - Navigate from system root
-
-## 🔧 Model Information
-
-- **Model**: ${selectedModel || 'Not configured'}
-- **Optimized for**: ${getModelOptimization(baseModelName)}
-- **Agent File**: \`${agentFileName}\`
-- **Configuration**: \`agent-config.json\`
-
-### Model-Specific Optimizations
-
-This agent is optimized for **${modelDisplayName}**:
-${getModelOptimizations(baseModelName)}
-
-## 📚 Examples
-
-### Basic Example
-\`\`\`bash
-node examples/basic-example.js
-\`\`\`
-
-### Advanced Example
-\`\`\`bash
-node examples/advanced-example.js
-\`\`\`
-
-### Project Templates
-\`\`\`bash
-node examples/project-templates.js react
-node examples/project-templates.js python
-node examples/project-templates.js express
-\`\`\`
-
-## 🛡️ Security Features
-
-- **Path Validation**: Prevents directory traversal attacks
-- **Sandboxed Operations**: All file operations stay within working directory
-- **Command Timeouts**: Automatic timeout for long-running commands
-- **Operation Logging**: All actions are logged and explained
-- **Error Recovery**: Graceful handling of failed operations
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**1. Agent won't start**
-\`\`\`bash
-# Check Ollama is running
-ollama serve
-
-# Verify model is installed
-ollama list
-
-# Re-run setup
-npm run setup
-\`\`\`
-
-**2. Model not found**
-\`\`\`bash
-# Install your model
-ollama pull ${selectedModel || 'codellama'}
-
-# Debug models
-npm run debug
-\`\`\`
-
-**3. Permission errors**
-\`\`\`bash
-# Make agent executable
-chmod +x ${agentFileName}
-
-# Fix npm permissions if needed
-npm config set prefix ~/.npm-global
-\`\`\`
-
-### Debug Tools
-
-\`\`\`bash
-# Run diagnostics
-npm run debug
-
-# Check configuration
-cat agent-config.json
-
-# Verify file structure
-ls -la *-agent.js
-\`\`\`
-
-## 📊 Performance Tips
-
-- **Be Specific**: Clear, detailed requests get better results
-- **Context Matters**: The agent remembers previous commands in the session
-- **Batch Operations**: Combine related tasks in one request
-- **Use Examples**: Show the agent what you want when possible
-
-## 📄 License
-
-MIT License - feel free to modify and distribute!
-
-## 🆘 Support
-
-- 📖 Check this README for solutions
-- 🔧 Run \`npm run debug\` for diagnostics
-- 🔄 Run \`npm run setup\` to reconfigure
-- 💬 Check the examples/ directory for usage patterns
-
----
-
-**Happy coding with ${modelDisplayName}! 🤖✨**
-`;
-
-    try {
-        await fs.writeFile('README.md', readme);
-        console.log('✅ Comprehensive README created');
-    } catch (error) {
-        console.log(`⚠️  Could not create README: ${error.message}`);
-    }
-}
-
 async function setup() {
     console.log('🚀 Terminal LLM Agent Setup Wizard');
     console.log('==================================');
@@ -1079,12 +563,7 @@ async function setup() {
         console.log('\n⚠️  No model selected. You can configure one later by running setup again.');
     }
 
-    // Step 6: Create examples and documentation
-    console.log('\n📚 Step 6: Creating examples and documentation...');
-    await createExampleFiles();
-    await createReadme(selectedModel);
-
-    // Step 7: Final summary and next steps
+    // Step 6: Final summary and next steps
     console.log('\n🎉 Setup Complete!');
     console.log('==================');
 
@@ -1095,14 +574,8 @@ async function setup() {
 
         console.log(`\n✨ Your ${modelDisplayName} agent is ready to use!`);
         console.log('\n📋 Quick Start Commands:');
-        console.log(`   🚀 npm start                    # Start interactive mode`);
         console.log(`   🎯 node ${agentFileName}         # Direct execution`);
         console.log(`   📦 npm run start:${baseModelName}   # Model-specific script`);
-
-        console.log('\n📚 Try the examples:');
-        console.log('   📄 node examples/basic-example.js');
-        console.log('   🧪 node examples/advanced-example.js');
-        console.log('   🎯 node examples/project-templates.js react');
 
         function getModelOptimization(modelName) {
             const optimizations = {
@@ -1190,7 +663,5 @@ module.exports = {
     pullModel,
     renameAgentFile,
     updatePackageJson,
-    createExampleFiles,
-    createReadme,
     setup
 };
