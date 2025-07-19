@@ -1,6 +1,6 @@
-# Terminal LLM Agent
+# Local Terminal LLM Agent
 
-A local AI assistant that executes terminal commands and manipulates files using Ollama.
+Give your ollama llm agentic capabilities.
 
 ## Features
 
