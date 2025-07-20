@@ -168,32 +168,45 @@ When the user asks you to:
 - Navigate directories: IMMEDIATELY use the change_directory tool
 - Append to files: IMMEDIATELY use the append_file tool
 
-IMPORTANT: You have the power to execute these actions directly. When a user asks you to create a file, run a command, or perform any file operation, you MUST use the appropriate tool immediately. Do not explain how to do it manually - actually do it using the tools.
+IMPORTANT:
+1. You have the power to execute these actions directly. When a user asks you to create a file, run a command, or perform any file operation, you MUST use the appropriate tool immediately.
+2. For MULTIPLE actions in one request, respond with an array of tool calls.
+3. Execute actions in the logical order they should be performed.
 
 Current working directory: ${this.workingDirectory}
 Operating system: ${os.platform()}
 
-To use a tool, respond with JSON in this exact format:
+For a SINGLE action, respond with:
 {"tool": "tool_name", "parameters": {"param1": "value1"}}
 
+For MULTIPLE actions, respond with:
+{"actions": [
+  {"tool": "tool_name1", "parameters": {"param1": "value1"}},
+  {"tool": "tool_name2", "parameters": {"param2": "value2"}}
+]}
+
 Available tools:
-- execute_command: Run shell commands (use this for npm, git, etc.)
-- create_file: Create or overwrite files (use this when asked to create any file)
-- read_file: Read file contents (use this when asked to show/read files)
-- list_directory: List directory contents (use this when asked to list files)
-- change_directory: Change working directory (use this when asked to navigate)
-- append_file: Append to existing files (use this when asked to add content)
+- execute_command: Run shell commands
+- create_file: Create or overwrite files
+- read_file: Read file contents
+- list_directory: List directory contents
+- change_directory: Change working directory
+- append_file: Append to existing files
+- delete_item: Delete files or directories
+- move_item: Move or rename items
+- copy_item: Copy files or directories
+- create_directory: Create directories
+- replace_in_file: Find and replace in files
+- search_files: Search for files by pattern
+- get_info: Get file/directory information
 
-Example responses:
-User: "Create a hello.txt file"
-You: {"tool": "create_file", "parameters": {"filepath": "hello.txt", "content": "Hello, World!"}}
-
-User: "Run npm init"
-You: {"tool": "execute_command", "parameters": {"command": "npm init -y"}}
-
-User: "Show me the files here"
-You: {"tool": "list_directory", "parameters": {"dirpath": "."}}
-
+Example for multiple actions:
+User: "Create a project folder, navigate into it, and create a README.md file"
+You: {"actions": [
+  {"tool": "create_directory", "parameters": {"dirpath": "my-project"}},
+  {"tool": "change_directory", "parameters": {"dirpath": "my-project"}},
+  {"tool": "create_file", "parameters": {"filepath": "README.md", "content": "# My Project\n\nProject description here."}}
+]}
 ALWAYS use tools when requested to perform actions. Never just give instructions.`;
 
         this.setupTools();
@@ -301,7 +314,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             let description = '';
 
             // Add helpful descriptions
-            if (model.name.includes('codellama')) {
+            if (model.name.includes('code')) {
                 description = ' - Best for coding tasks';
             } else if (model.name.includes('llama2')) {
                 description = ' - Good for general conversation';
@@ -622,143 +635,550 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 }
             }
         });
-    }
 
-    async chat(message) {
-        try {
-            const response = await fetch(`${this.baseUrl}/api/chat`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    model: this.model,
-                    messages: [
-                        {role: 'system', content: this.systemPrompt},
-                        ...this.conversationHistory.slice(-this.maxHistoryLength),
-                        {role: 'user', content: message}
-                    ],
-                    stream: false,
-                    options: {
-                        temperature: 0.1, // Very low temperature for consistent tool usage
-                        top_p: 0.8,
-                        top_k: 20,
+        /**
+         * Additional tools for LLM system interaction
+         * Extends the existing tool framework with file management,
+         * search, and system utilities
+         */
+
+// Delete file or directory
+        this.tools.set('delete_item', {
+            description: 'Delete a file or directory (use with caution)',
+            parameters: {
+                filepath: 'string',
+                recursive: 'boolean (optional, default false for directories)'
+            },
+            handler: async (params) => {
+                const {filepath, recursive = false} = params;
+
+                try {
+                    const fullPath = this.validatePath(filepath);
+                    const stats = await fs.stat(fullPath);
+
+                    console.log(`🗑️  Deleting: ${fullPath}`);
+
+                    if (stats.isDirectory()) {
+                        await fs.rm(fullPath, {recursive, force: true});
+                    } else {
+                        await fs.unlink(fullPath);
                     }
-                }),
-            });
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+                    return {
+                        success: true,
+                        filepath: fullPath,
+                        type: stats.isDirectory() ? 'directory' : 'file',
+                        message: `${stats.isDirectory() ? 'Directory' : 'File'} deleted successfully`
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        filepath: filepath
+                    };
+                }
             }
+        });
 
-            const data = await response.json();
-            let assistantMessage = data.message.content;
+        // Move or rename file/directory
+        this.tools.set('move_item', {
+            description: 'Move or rename a file or directory',
+            parameters: {
+                source: 'string',
+                destination: 'string',
+                overwrite: 'boolean (optional, default false)'
+            },
+            handler: async (params) => {
+                const {source, destination, overwrite = false} = params;
 
-            // Check if the response contains a tool call
-            const toolResult = await this.handleToolCall(assistantMessage);
+                try {
+                    const sourcePath = this.validatePath(source);
+                    const destPath = this.validatePath(destination);
 
-            if (toolResult) {
-                // If tool was executed, get a follow-up response
-                const followUpPrompt = `Tool execution result: ${JSON.stringify(toolResult, null, 2)}
+                    console.log(`📦 Moving: ${sourcePath} → ${destPath}`);
 
-Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result.`;
-
-                const followUpResponse = await fetch(`${this.baseUrl}/api/chat`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        model: this.model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `You are a helpful assistant. Provide a brief summary of the tool execution result. Be concise and helpful.`
-                            },
-                            {role: 'user', content: followUpPrompt}
-                        ],
-                        stream: false,
-                        options: {
-                            temperature: 0.3,
+                    // Check if destination exists
+                    try {
+                        await fs.access(destPath);
+                        if (!overwrite) {
+                            return {
+                                success: false,
+                                error: 'Destination already exists. Set overwrite=true to replace.',
+                                source: sourcePath,
+                                destination: destPath
+                            };
                         }
-                    }),
-                });
+                    } catch (e) {
+                        // Destination doesn't exist, which is fine
+                    }
 
-                const followUpData = await followUpResponse.json();
-                assistantMessage = followUpData.message.content;
-            } else {
-                // If no tool was used but message seems like an action request, try retry
-                if (this.seemsLikeActionRequest(message) && !this.containsToolCall(assistantMessage)) {
-                    console.log('\n⚠️  No tool was used. Trying again with explicit instructions...');
+                    await fs.rename(sourcePath, destPath);
 
-                    const retryPrompt = `The user said: "${message}"
+                    return {
+                        success: true,
+                        source: sourcePath,
+                        destination: destPath,
+                        message: 'Item moved successfully'
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        source: source,
+                        destination: destination
+                    };
+                }
+            }
+        });
 
-This requires action. You MUST use the appropriate tool immediately. Do not explain - actually do it.
+        // Copy file or directory
+        this.tools.set('copy_item', {
+            description: 'Copy a file or directory',
+            parameters: {
+                source: 'string',
+                destination: 'string',
+                overwrite: 'boolean (optional, default false)'
+            },
+            handler: async (params) => {
+                const {source, destination, overwrite = false} = params;
 
-Respond ONLY with the tool call in JSON format like: {"tool": "tool_name", "parameters": {"param": "value"}}`;
+                try {
+                    const sourcePath = this.validatePath(source);
+                    const destPath = this.validatePath(destination);
 
-                    const retryResponse = await fetch(`${this.baseUrl}/api/chat`, {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({
-                            model: this.model,
-                            messages: [
-                                {role: 'system', content: this.systemPrompt},
-                                {role: 'user', content: retryPrompt}
-                            ],
-                            stream: false,
-                            options: {temperature: 0.05}
-                        }),
+                    console.log(`📋 Copying: ${sourcePath} → ${destPath}`);
+
+                    // Check if destination exists
+                    try {
+                        await fs.access(destPath);
+                        if (!overwrite) {
+                            return {
+                                success: false,
+                                error: 'Destination already exists. Set overwrite=true to replace.',
+                                source: sourcePath,
+                                destination: destPath
+                            };
+                        }
+                    } catch (e) {
+                        // Destination doesn't exist, which is fine
+                    }
+
+                    const stats = await fs.stat(sourcePath);
+
+                    if (stats.isDirectory()) {
+                        await fs.cp(sourcePath, destPath, {recursive: true, force: overwrite});
+                    } else {
+                        await fs.copyFile(sourcePath, destPath);
+                    }
+
+                    return {
+                        success: true,
+                        source: sourcePath,
+                        destination: destPath,
+                        type: stats.isDirectory() ? 'directory' : 'file',
+                        message: 'Item copied successfully'
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        source: source,
+                        destination: destination
+                    };
+                }
+            }
+        });
+
+        // Search for files by pattern
+        this.tools.set('search_files', {
+            description: 'Search for files matching a pattern',
+            parameters: {
+                pattern: 'string (glob pattern or regex)',
+                directory: 'string (optional, default current directory)',
+                maxDepth: 'number (optional, default 5)',
+                type: 'string (optional: "file", "directory", or "all", default "all")'
+            },
+            handler: async (params) => {
+                const {pattern, directory = '.', maxDepth = 5, type = 'all'} = params;
+                const glob = (await import('glob')).glob;
+
+                try {
+                    const searchPath = this.validatePath(directory);
+                    console.log(`🔍 Searching for: ${pattern} in ${searchPath}`);
+
+                    const matches = await glob(pattern, {
+                        cwd: searchPath,
+                        maxDepth: maxDepth,
+                        nodir: type === 'file',
+                        onlyDirectories: type === 'directory'
                     });
 
-                    const retryData = await retryResponse.json();
-                    const retryToolResult = await this.handleToolCall(retryData.message.content);
+                    // Get details for each match
+                    const results = await Promise.all(matches.map(async (match) => {
+                        try {
+                            const fullPath = path.join(searchPath, match);
+                            const stats = await fs.stat(fullPath);
+                            return {
+                                path: match,
+                                fullPath: fullPath,
+                                type: stats.isDirectory() ? 'directory' : 'file',
+                                size: stats.size,
+                                modified: stats.mtime
+                            };
+                        } catch (error) {
+                            return {
+                                path: match,
+                                error: 'Could not read stats'
+                            };
+                        }
+                    }));
 
-                    if (retryToolResult) {
-                        assistantMessage = `Successfully executed the requested action.`;
+                    return {
+                        success: true,
+                        pattern: pattern,
+                        directory: searchPath,
+                        count: results.length,
+                        matches: results
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        pattern: pattern,
+                        directory: directory
+                    };
+                }
+            }
+        });
+
+        // Find and replace in file
+        this.tools.set('replace_in_file', {
+            description: 'Find and replace text in a file',
+            parameters: {
+                filepath: 'string',
+                find: 'string (text or regex pattern)',
+                replace: 'string',
+                isRegex: 'boolean (optional, default false)',
+                flags: 'string (optional regex flags, default "g")'
+            },
+            handler: async (params) => {
+                const {filepath, find, replace, isRegex = false, flags = 'g'} = params;
+
+                try {
+                    const fullPath = this.validatePath(filepath);
+                    console.log(`🔄 Replacing in file: ${fullPath}`);
+
+                    let content = await fs.readFile(fullPath, 'utf8');
+                    const originalContent = content;
+
+                    if (isRegex) {
+                        const regex = new RegExp(find, flags);
+                        content = content.replace(regex, replace);
                     } else {
-                        assistantMessage = `I understand you want me to: ${message}. However, I had trouble executing the appropriate tool. Please try rephrasing your request.`;
+                        // Escape special regex characters for literal replacement
+                        const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const regex = new RegExp(escapedFind, flags);
+                        content = content.replace(regex, replace);
                     }
+
+                    await fs.writeFile(fullPath, content, 'utf8');
+
+                    const replacements = originalContent.length - content.length;
+
+                    return {
+                        success: true,
+                        filepath: fullPath,
+                        replacements: Math.abs(replacements),
+                        message: `Replacement completed successfully`
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        filepath: filepath
+                    };
+                }
+            }
+        });
+
+        // Get file/directory info
+        this.tools.set('get_info', {
+            description: 'Get detailed information about a file or directory',
+            parameters: {filepath: 'string'},
+            handler: async (params) => {
+                const {filepath} = params;
+
+                try {
+                    const fullPath = this.validatePath(filepath);
+                    const stats = await fs.stat(fullPath);
+
+                    console.log(`ℹ️  Getting info for: ${fullPath}`);
+
+                    const info = {
+                        success: true,
+                        path: fullPath,
+                        exists: true,
+                        type: stats.isDirectory() ? 'directory' : stats.isFile() ? 'file' : 'other',
+                        size: stats.size,
+                        sizeHuman: this.formatBytes(stats.size),
+                        created: stats.birthtime,
+                        modified: stats.mtime,
+                        accessed: stats.atime,
+                        permissions: stats.mode.toString(8),
+                        isReadable: true,
+                        isWritable: true
+                    };
+
+                    // Additional info for directories
+                    if (stats.isDirectory()) {
+                        try {
+                            const entries = await fs.readdir(fullPath);
+                            info.itemCount = entries.length;
+                        } catch (e) {
+                            info.itemCount = 'unknown';
+                        }
+                    }
+
+                    // Additional info for files
+                    if (stats.isFile()) {
+                        const ext = path.extname(fullPath).toLowerCase();
+                        info.extension = ext;
+                        info.basename = path.basename(fullPath);
+
+                        // Try to detect file type
+                        if (['.txt', '.md', '.log', '.json', '.js', '.py', '.html', '.css'].includes(ext)) {
+                            info.likelyText = true;
+                        } else if (['.jpg', '.png', '.gif', '.bmp', '.svg'].includes(ext)) {
+                            info.likelyImage = true;
+                        } else if (['.zip', '.tar', '.gz', '.rar'].includes(ext)) {
+                            info.likelyArchive = true;
+                        }
+                    }
+
+                    return info;
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        path: filepath,
+                        exists: false
+                    };
+                }
+            }
+        });
+
+        // Create directory
+        this.tools.set('create_directory', {
+            description: 'Create a directory (creates parent directories if needed)',
+            parameters: {dirpath: 'string'},
+            handler: async (params) => {
+                const {dirpath} = params;
+
+                try {
+                    const fullPath = this.validatePath(dirpath);
+                    console.log(`📁 Creating directory: ${fullPath}`);
+
+                    await fs.mkdir(fullPath, {recursive: true});
+
+                    return {
+                        success: true,
+                        directory: fullPath,
+                        message: 'Directory created successfully'
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        directory: dirpath
+                    };
+                }
+            }
+        });
+
+// Get environment variables
+        this.tools.set('get_env', {
+            description: 'Get environment variables',
+            parameters: {
+                name: 'string (optional, specific variable name)',
+                filter: 'string (optional, filter pattern)'
+            },
+            handler: async (params) => {
+                const {name, filter} = params;
+
+                console.log(`🌍 Getting environment variables`);
+
+                if (name) {
+                    return {
+                        success: true,
+                        name: name,
+                        value: process.env[name] || null,
+                        exists: name in process.env
+                    };
+                }
+
+                let envVars = {...process.env};
+
+                // Apply filter if provided
+                if (filter) {
+                    const filtered = {};
+                    const filterRegex = new RegExp(filter, 'i');
+                    for (const [key, value] of Object.entries(envVars)) {
+                        if (filterRegex.test(key)) {
+                            filtered[key] = value;
+                        }
+                    }
+                    envVars = filtered;
+                }
+
+                // Don't expose sensitive variables
+                const sensitive = ['PASSWORD', 'SECRET', 'KEY', 'TOKEN', 'AUTH'];
+                const sanitized = {};
+                for (const [key, value] of Object.entries(envVars)) {
+                    if (sensitive.some(s => key.toUpperCase().includes(s))) {
+                        sanitized[key] = '***REDACTED***';
+                    } else {
+                        sanitized[key] = value;
+                    }
+                }
+
+                return {
+                    success: true,
+                    count: Object.keys(sanitized).length,
+                    variables: sanitized
+                };
+            }
+        });
+
+        // Execute code evaluation (for simple calculations/transformations)
+        this.tools.set('evaluate_code', {
+            description: 'Evaluate simple JavaScript code (use with caution)',
+            parameters: {
+                code: 'string',
+                context: 'object (optional, variables to make available)'
+            },
+            handler: async (params) => {
+                const {code, context = {}} = params;
+
+                console.log(`⚡ Evaluating code`);
+
+                try {
+                    // Create a limited scope for evaluation
+                    const AsyncFunction = Object.getPrototypeOf(async function () {
+                    }).constructor;
+                    const func = new AsyncFunction(...Object.keys(context), code);
+                    const result = await func(...Object.values(context));
+
+                    return {
+                        success: true,
+                        result: result,
+                        type: typeof result,
+                        message: 'Code evaluated successfully'
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        error: error.message,
+                        stack: error.stack
+                    };
+                }
+            }
+        });
+
+        // Utility function for formatting bytes
+        this.formatBytes = (bytes, decimals = 2) => {
+            if (bytes === 0) return '0 Bytes';
+
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        };
+    }
+
+// Enhanced handleToolCall to support multiple actions
+    async handleMultipleToolCalls(response) {
+        try {
+            // First try to parse as multi-action format
+            let multiActionMatch = response.match(/\{[^{}]*"actions"[^{}]*\[[\s\S]*?\]\s*\}/);
+
+            if (multiActionMatch) {
+                const multiAction = JSON.parse(multiActionMatch[0]);
+
+                if (multiAction.actions && Array.isArray(multiAction.actions)) {
+                    console.log(`\n🔧 Executing ${multiAction.actions.length} actions...`);
+
+                    const results = [];
+                    let allSuccess = true;
+
+                    for (let i = 0; i < multiAction.actions.length; i++) {
+                        const action = multiAction.actions[i];
+                        console.log(`\n[${i + 1}/${multiAction.actions.length}] ${action.tool}`);
+
+                        if (!this.tools.has(action.tool)) {
+                            console.log(`⚠️  Unknown tool: ${action.tool}`);
+                            results.push({
+                                tool: action.tool,
+                                success: false,
+                                error: `Unknown tool: ${action.tool}`
+                            });
+                            allSuccess = false;
+                            continue;
+                        }
+
+                        const tool = this.tools.get(action.tool);
+                        console.log(`📋 Parameters:`, action.parameters);
+
+                        try {
+                            const result = await tool.handler(action.parameters);
+                            results.push({
+                                tool: action.tool,
+                                ...result
+                            });
+
+                            if (!result.success) {
+                                allSuccess = false;
+                                console.log(`❌ Failed: ${result.error}`);
+                            } else {
+                                console.log(`✅ Success`);
+                            }
+                        } catch (error) {
+                            results.push({
+                                tool: action.tool,
+                                success: false,
+                                error: error.message
+                            });
+                            allSuccess = false;
+                            console.log(`❌ Error: ${error.message}`);
+                        }
+                    }
+
+                    return {
+                        type: 'multiple',
+                        success: allSuccess,
+                        results: results,
+                        summary: `Executed ${results.length} actions, ${results.filter(r => r.success).length} succeeded`
+                    };
                 }
             }
 
+            // Fall back to single action parsing
+            return await this.handleSingleToolCall(response);
 
-            // Update conversation history
-            this.conversationHistory.push({role: 'user', content: message});
-            this.conversationHistory.push({role: 'assistant', content: assistantMessage});
-
-            return assistantMessage;
-        } catch (error) {
-            console.error('Error communicating with LLM:', error);
-            throw error;
+        } catch (e) {
+            console.log(`⚠️  Error parsing tool calls: ${e.message}`);
+            return null;
         }
     }
 
-    // Helper function to detect if a message seems like an action request
-    seemsLikeActionRequest(message) {
-        const actionWords = [
-            'create', 'make', 'build', 'generate', 'write',
-            'run', 'execute', 'install', 'start', 'launch',
-            'list', 'show', 'display', 'read', 'open',
-            'delete', 'remove', 'move', 'copy', 'rename',
-            'cd', 'ls', 'cat', 'touch', 'mkdir',
-            'npm', 'git', 'pip', 'yarn', 'node', 'npx'
-        ];
-
-        const lowerMessage = message.toLowerCase();
-        return actionWords.some(word => lowerMessage.includes(word));
-    }
-
-    containsToolCall(response) {
-        return response.includes('"tool"') && response.includes('"parameters"');
-    }
-
-    async handleToolCall(response) {
+// Rename original handleToolCall to handleSingleToolCall
+    async handleSingleToolCall(response) {
         try {
-            // More robust JSON extraction
+            // Original single tool parsing logic
             let jsonMatch = response.match(/\{[^{}]*"tool"[^{}]*\}/);
 
-            // If simple match fails, try to find nested JSON
             if (!jsonMatch) {
                 const matches = response.match(/\{(?:[^{}]|\{[^{}]*\})*\}/g);
                 if (matches) {
@@ -777,25 +1197,12 @@ Respond ONLY with the tool call in JSON format like: {"tool": "tool_name", "para
             }
 
             if (!jsonMatch) {
-                console.log('⚠️  No valid tool call found in response');
                 return null;
             }
 
             const toolCall = JSON.parse(jsonMatch[0]);
 
-            // Validate tool call structure
-            if (!toolCall.tool || typeof toolCall.tool !== 'string') {
-                console.log('⚠️  Invalid tool call: missing or invalid tool name');
-                return null;
-            }
-
-            if (!this.tools.has(toolCall.tool)) {
-                console.log(`⚠️  Unknown tool: ${toolCall.tool}`);
-                return null;
-            }
-
-            if (!toolCall.parameters || typeof toolCall.parameters !== 'object') {
-                console.log('⚠️  Invalid tool call: missing or invalid parameters');
+            if (!toolCall.tool || !this.tools.has(toolCall.tool)) {
                 return null;
             }
 
@@ -805,28 +1212,172 @@ Respond ONLY with the tool call in JSON format like: {"tool": "tool_name", "para
 
             const result = await tool.handler(toolCall.parameters);
 
-            if (result.success) {
-                console.log(`✅ Tool executed successfully`);
-                // Show command output if available
-                if (result.stdout) {
-                    console.log(`📤 Output: ${result.stdout}`);
+            return {
+                type: 'single',
+                ...result
+            };
+
+        } catch (e) {
+            return null;
+        }
+    }
+
+// Update the main chat method to use the new handler
+    async chat(message) {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    model: this.model,
+                    messages: [
+                        {role: 'system', content: this.systemPrompt},
+                        ...this.conversationHistory.slice(-this.maxHistoryLength),
+                        {role: 'user', content: message}
+                    ],
+                    stream: false,
+                    options: {
+                        temperature: 0.1,
+                        top_p: 0.8,
+                        top_k: 20,
+                    }
+                }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            let assistantMessage = data.message.content;
+
+            // Use the new multi-action handler
+            const toolResult = await this.handleMultipleToolCalls(assistantMessage);
+
+            if (toolResult) {
+                // Generate appropriate follow-up based on result type
+                let followUpPrompt;
+
+                if (toolResult.type === 'multiple') {
+                    followUpPrompt = `Multiple tool execution results:
+${JSON.stringify(toolResult.results, null, 2)}
+
+Please provide a brief, natural language summary of what was accomplished. Be concise and mention any failures.`;
+                } else {
+                    followUpPrompt = `Tool execution result: ${JSON.stringify(toolResult, null, 2)}
+
+Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result.`;
                 }
-                if (result.stderr && result.stderr.trim()) {
-                    console.log(`⚠️  Warnings: ${result.stderr}`);
-                }
+
+                const followUpResponse = await fetch(`${this.baseUrl}/api/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: this.model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `You are a helpful assistant. Provide a brief summary of the tool execution result(s). Be concise and helpful.`
+                            },
+                            {role: 'user', content: followUpPrompt}
+                        ],
+                        stream: false,
+                        options: {
+                            temperature: 0.3,
+                        }
+                    }),
+                });
+
+                const followUpData = await followUpResponse.json();
+                assistantMessage = followUpData.message.content;
             } else {
-                console.log(`❌ Tool execution failed: ${result.error}`);
-                if (result.stderr) {
-                    console.log(`📤 Error output: ${result.stderr}`);
+                // Retry logic for action requests
+                if (this.seemsLikeActionRequest(message) && !this.containsToolCall(assistantMessage)) {
+                    console.log('\n⚠️  No tool was used. Trying again with explicit instructions...');
+
+                    const retryPrompt = `The user said: "${message}"
+
+This requires action(s). You MUST use the appropriate tool(s) immediately.
+
+If multiple actions are needed, use the multi-action format:
+{"actions": [{"tool": "tool_name", "parameters": {...}}, ...]}
+
+If only one action is needed, use:
+{"tool": "tool_name", "parameters": {...}}`;
+
+                    const retryResponse = await fetch(`${this.baseUrl}/api/chat`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            model: this.model,
+                            messages: [
+                                {role: 'system', content: this.systemPrompt},
+                                {role: 'user', content: retryPrompt}
+                            ],
+                            stream: false,
+                            options: {temperature: 0.05}
+                        }),
+                    });
+
+                    const retryData = await retryResponse.json();
+                    const retryToolResult = await this.handleMultipleToolCalls(retryData.message.content);
+
+                    if (retryToolResult) {
+                        assistantMessage = `Successfully executed the requested action(s).`;
+                    } else {
+                        assistantMessage = `I understand you want me to: ${message}. However, I had trouble executing the appropriate tools. Please try rephrasing your request.`;
+                    }
                 }
             }
 
-            return result;
-        } catch (e) {
-            console.log(`⚠️  Error parsing tool call: ${e.message}`);
-            console.log(`📝 Raw response: ${response.substring(0, 200)}...`);
-            return null;
+            // Update conversation history
+            this.conversationHistory.push({role: 'user', content: message});
+            this.conversationHistory.push({role: 'assistant', content: assistantMessage});
+
+            return assistantMessage;
+        } catch (error) {
+            console.error('Error communicating with LLM:', error);
+            throw error;
         }
+    }
+
+// Update containsToolCall to check for both formats
+    containsToolCall(response) {
+        return (response.includes('"tool"') && response.includes('"parameters"')) ||
+            (response.includes('"actions"') && response.includes('['));
+    }
+
+// Add helper to detect complex multi-action requests
+    seemsLikeMultiActionRequest(message) {
+        const multiActionIndicators = [
+            ' and ', ' then ', ' after ', ' followed by ',
+            ', then', 'first ', 'second ', 'finally ',
+            'multiple ', 'several ', ' also ', ' as well'
+        ];
+
+        const lowerMessage = message.toLowerCase();
+        return multiActionIndicators.some(indicator => lowerMessage.includes(indicator));
+    }
+
+// Enhanced action detection
+    seemsLikeActionRequest(message) {
+        const actionWords = [
+            'create', 'make', 'build', 'generate', 'write',
+            'run', 'execute', 'install', 'start', 'launch',
+            'list', 'show', 'display', 'read', 'open',
+            'delete', 'remove', 'move', 'copy', 'rename',
+            'cd', 'ls', 'cat', 'touch', 'mkdir',
+            'npm', 'git', 'pip', 'yarn', 'node', 'npx',
+            'setup', 'initialize', 'scaffold'
+        ];
+
+        const lowerMessage = message.toLowerCase();
+        return actionWords.some(word => lowerMessage.includes(word)) ||
+            this.seemsLikeMultiActionRequest(message);
     }
 
 
