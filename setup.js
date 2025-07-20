@@ -239,11 +239,11 @@ async function selectModel(models) {
 
         const modified = new Date(model.modified).toLocaleDateString();
         console.log(`   ${index + 1}. ${model.name} (${model.sizeGB}GB)${description}`);
-        console.log(`      📅 Last used: ${modified} \n`);
+        console.log(`      📅 Last used: ${modified}`);
     });
 
     console.log(`\n   ${models.length + 1}. 📥 Install a new model`);
-    console.log(`   ${models.length + 2}. ⏭️  Skip model selection`);
+    console.log(`\n   ${models.length + 2}. ⏭️  Skip model selection`);
 
     while (true) {
         const choice = await askQuestion(`\nSelect a model (1-${models.length + 2}): `);
@@ -562,7 +562,7 @@ async function setup() {
     } else {
         console.log('\n⚠️  No model selected. You can configure one later by running setup again.');
     }
-
+    console.clear();
     // Step 6: Final summary and next steps
     console.log('\n🎉 Setup Complete!');
     console.log('==================');

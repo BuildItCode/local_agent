@@ -68,7 +68,8 @@ class TerminalUI {
             output: chalk.white,
             file: chalk.green,
             directory: chalk.blue.bold,
-            tool: chalk.magenta
+            tool: chalk.magenta,
+            recommendation: chalk.yellow.bold
         };
     }
 
@@ -94,7 +95,7 @@ class TerminalUI {
 
         const formatted = useMarkdown
             ? marked.parse(text)
-            : text; // Use plain text
+            : text;
 
         switch (style) {
             case 'assistant':
@@ -110,7 +111,6 @@ class TerminalUI {
         }
     }
 
-
     showBox(title, content, style = 'single') {
         const boxContent = boxen(content, {
             title: title,
@@ -122,6 +122,108 @@ class TerminalUI {
         });
         console.log(boxContent);
     }
+
+    /**
+     * Show a recommendation box with clear action description
+     */
+    showRecommendation(title, description, actions) {
+        const actionsText = Array.isArray(actions)
+            ? actions.map((action, i) => `${i + 1}. ${action}`).join('\n')
+            : actions;
+
+        const content = `${description}\n\n${this.theme.command('Proposed Actions:')}\n${actionsText}`;
+
+        const boxContent = boxen(content, {
+            title: `💡 ${title}`,
+            titleAlignment: 'center',
+            padding: 1,
+            margin: 1,
+            borderStyle: 'double',
+            borderColor: 'yellow'
+        });
+        console.log(boxContent);
+    }
+
+    /**
+     * Prompt user for confirmation with customizable options
+     */
+    async askConfirmation(question, options = ['yes', 'no']) {
+        return new Promise((resolve) => {
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout
+            });
+
+            const optionsText = options.map((opt, i) => `${i + 1}. ${opt}`).join(', ');
+            const prompt = `${this.theme.recommendation('❓')} ${question}\n   Options: ${optionsText}\n   Choice: `;
+
+            // Ensure the prompt is displayed
+            process.stdout.write(prompt);
+
+            const handleInput = (answer) => {
+                const trimmedAnswer = answer.trim();
+
+                // Handle empty input
+                if (!trimmedAnswer) {
+                    console.log('\nPlease enter a valid choice.');
+                    rl.close();
+                    return this.askConfirmation(question, options).then(resolve);
+                }
+
+                // Handle numeric input - only accept single digits within range
+                const numChoice = parseInt(trimmedAnswer);
+                if (trimmedAnswer.length === 1 && numChoice >= 1 && numChoice <= options.length) {
+                    rl.close();
+                    console.log(`\n✅ Selected: ${options[numChoice - 1]}`);
+                    resolve(options[numChoice - 1]);
+                    return;
+                }
+
+                // Handle multi-digit numbers or out-of-range numbers
+                if (!isNaN(numChoice) && (trimmedAnswer.length > 1 || numChoice < 1 || numChoice > options.length)) {
+                    console.log(`\n❌ Invalid choice: "${trimmedAnswer}". Please enter a number between 1 and ${options.length}.`);
+                    rl.close();
+                    return this.askConfirmation(question, options).then(resolve);
+                }
+
+                // Handle text input (case insensitive, partial match)
+                const lowerAnswer = trimmedAnswer.toLowerCase();
+                const match = options.find(opt =>
+                    opt.toLowerCase().startsWith(lowerAnswer) ||
+                    opt.toLowerCase() === lowerAnswer
+                );
+
+                if (match) {
+                    rl.close();
+                    console.log(`\n✅ Selected: ${match}`);
+                    resolve(match);
+                } else {
+                    console.log(`\n❌ Invalid choice: "${trimmedAnswer}". Please try again.`);
+                    rl.close();
+                    this.askConfirmation(question, options).then(resolve);
+                }
+            };
+
+            // Use 'line' event instead of direct event handling for better control
+            rl.on('line', handleInput);
+
+            // Handle Ctrl+C gracefully
+            rl.on('SIGINT', () => {
+                console.log('\n⚠️  Operation cancelled by user');
+                rl.close();
+                resolve('no');
+            });
+
+            // Handle unexpected close
+            rl.on('close', () => {
+                // Only resolve if we haven't already resolved
+                if (rl.listenerCount('line') > 0) {
+                    resolve('no');
+                }
+            });
+        });
+    }
+
 
     startSpinner(text) {
         if (this.spinner && this.spinner.isSpinning) {
@@ -207,7 +309,6 @@ class TerminalUI {
                 lines.push(this.theme.muted(`├─ ${result.message}`));
             }
 
-            // Special formatting for command output
             if (result.stdout && result.stdout.trim()) {
                 lines.push(this.theme.muted('├─ Output:'));
                 result.stdout.trim().split('\n').forEach(line => {
@@ -238,7 +339,7 @@ class TerminalUI {
             'Run shell commands by just asking',
             'Search for files using patterns',
             'Get help anytime by typing "help"',
-            'Use markdown in your prompts for better formatting'
+            'Agent will ask for confirmation on risky actions'
         ];
 
         const welcomeBox = boxen(
@@ -286,7 +387,7 @@ class TerminalUI {
         process.stdout.write('\r' + text);
 
         if (current >= total) {
-            console.log(''); // New line when complete
+            console.log('');
         }
     }
 
@@ -344,21 +445,69 @@ class TerminalLLMAgent {
         this.baseUrl = options.baseUrl || 'http://localhost:11434';
         this.model = options.model || this.loadConfigModel() || null;
         this.workingDirectory = options.workingDirectory || process.cwd();
+        this.rootWorkingDirectory = options.rootWorkingDirectory || this.workingDirectory;
         this.conversationHistory = [];
         this.maxHistoryLength = options.maxHistoryLength || 20;
         this.ui = new TerminalUI();
+        this.systemPrompt = null;
+        this.confirmationMode = options.confirmationMode || 'auto'; // 'auto', 'always', 'never'
+        this.autoConfirmSafe = options.autoConfirmSafe !== false; // Auto-confirm safe operations
 
-        // System prompt for terminal-aware assistant
-        this.systemPrompt = `You are a helpful AI assistant with access to terminal commands and file system operations. 
+        this.setupTools();
+    }
+
+    generateSystemPrompt() {
+        return `You are a helpful AI assistant with access to terminal commands and file system operations. 
 You MUST use the available tools to perform actions - DO NOT just explain how to do things.
+
+CRITICAL: When a user requests an action, execute the action IMMEDIATELY using tools. Do NOT provide recommendations before executing the requested action.
+
+RECOMMENDATION SYSTEM:
+Only AFTER executing the requested actions, you may provide recommendations for follow-up actions using this format:
+<recommendation>
+<title>Recommendation Title</title>
+<description>Brief description of why this is recommended</description>
+<actions>
+- action 1 description
+- action 2 description
+</actions>
+</recommendation>
+
+EXECUTION ORDER:
+1. FIRST: Execute the user's requested action using tools
+2. THEN: Optionally provide recommendations for follow-up actions
+
+EXAMPLES OF WHEN TO RECOMMEND (after execution):
+- After installing packages, suggest creating/updating .gitignore
+- After creating a project, suggest initializing git
+- After running tests that fail, suggest fixes
+- Before destructive operations, suggest backups
+- When security issues are detected, suggest improvements
 
 When the user asks you to:
 - Run commands: IMMEDIATELY use the execute_command tool
-- Create files: IMMEDIATELY use the create_file tool  
-- Read files: IMMEDIATELY use the read_file tool
+- Create files: IMMEDIATELY use the create_file tool with filepath parameter
+- Read files: IMMEDIATELY use the read_file tool with filepath parameter
 - List directories: IMMEDIATELY use the list_directory tool
 - Navigate directories: IMMEDIATELY use the change_directory tool
 - Append to files: IMMEDIATELY use the append_file tool
+- Delete files: IMMEDIATELY use the delete_item tool for files or execute_command for bulk operations
+
+CRITICAL PATH RULES:
+1. NEVER use absolute paths like "/Users/..." unless explicitly provided by the user
+2. For current directory operations, use "." or omit the dirpath parameter entirely
+3. For subdirectories, use relative paths like "subfolder" or "./subfolder"
+4. DO NOT generate or hallucinate directory paths
+5. When user says "list files" or "list directory", use {"tool": "list_directory", "parameters": {}}
+6. When creating files, always include "content" parameter (use empty string "" for empty files)
+7. For "delete all files", use execute_command with appropriate shell command like "rm *" or similar
+8. IMPORTANT: Use "filepath" parameter for file operations, not "path"
+
+PARAMETER NAMES:
+- create_file: {"filepath": "filename.txt", "content": "file content"}
+- read_file: {"filepath": "filename.txt"}
+- append_file: {"filepath": "filename.txt", "content": "content to append"}
+- delete_item: {"filepath": "filename.txt"}
 
 IMPORTANT: 
 1. You have the power to execute these actions directly. When a user asks you to create a file, run a command, or perform any file operation, you MUST use the appropriate tool immediately.
@@ -377,11 +526,21 @@ For MULTIPLE actions, respond with:
   {"tool": "tool_name2", "parameters": {"param2": "value2"}}
 ]}
 
+CORRECT EXAMPLES:
+- Create file: {"tool": "create_file", "parameters": {"filepath": "test.txt", "content": "Hello World"}}
+- Create 5 files: {"actions": [
+    {"tool": "create_file", "parameters": {"filepath": "text1.txt", "content": ""}},
+    {"tool": "create_file", "parameters": {"filepath": "text2.txt", "content": ""}},
+    {"tool": "create_file", "parameters": {"filepath": "text3.txt", "content": ""}},
+    {"tool": "create_file", "parameters": {"filepath": "text4.txt", "content": ""}},
+    {"tool": "create_file", "parameters": {"filepath": "text5.txt", "content": ""}}
+  ]}
+
 Available tools:
 - execute_command: Run shell commands
-- create_file: Create or overwrite files
+- create_file: Create or overwrite files (always include filepath and content parameters)
 - read_file: Read file contents
-- list_directory: List directory contents
+- list_directory: List directory contents (use {} for current directory)
 - change_directory: Change working directory
 - append_file: Append to existing files
 - delete_item: Delete files or directories
@@ -392,17 +551,14 @@ Available tools:
 - search_files: Search for files by pattern
 - get_info: Get file/directory information
 
-Example for multiple actions:
-User: "Create a project folder, navigate into it, and create a README.md file"
-You: {"actions": [
-  {"tool": "create_directory", "parameters": {"dirpath": "my-project"}},
-  {"tool": "change_directory", "parameters": {"dirpath": "my-project"}},
-  {"tool": "create_file", "parameters": {"filepath": "README.md", "content": "# My Project\n\nProject description here."}}
-]}
 ALWAYS use tools when requested to perform actions. Never just give instructions.
 DO NOT show your thinking process or the think tags, show only the response`;
+    }
 
-        this.setupTools();
+
+    // Update system prompt method
+    updateSystemPrompt() {
+        this.systemPrompt = this.generateSystemPrompt();
     }
 
     loadConfigModel() {
@@ -422,19 +578,122 @@ DO NOT show your thinking process or the think tags, show only the response`;
     // Validate file path to prevent directory traversal
     validatePath(filepath) {
         const safePath = filepath ?? '.';
+        // For relative paths, resolve against working directory
         const resolvedPath = path.resolve(this.workingDirectory, safePath);
-        const workingDirResolved = path.resolve(this.workingDirectory);
 
-        if (!resolvedPath.startsWith(workingDirResolved)) {
-            throw new Error(`Access denied: Path ${safePath} is outside the working directory`);
-        }
+        // Get the root working directory (the original directory when agent started)
+        // This should be set when the agent initializes or when directory is selected
+        const rootWorkingDir = this.rootWorkingDirectory || this.workingDirectory.split('/').slice(0, -1).join('/') || '/';
 
-        if (resolvedPath === workingDirResolved) {
-            throw new Error(`Refusing to delete the working directory itself`);
+        // Allow navigation within the project tree
+        // The resolved path should be within or equal to the root working directory
+        if (!resolvedPath.startsWith(rootWorkingDir) && resolvedPath !== rootWorkingDir) {
+            throw new Error(`Access denied: Path ${safePath} would go outside the project directory`);
         }
 
         return resolvedPath;
     }
+
+    /**
+     * Parse and handle recommendations from LLM responses
+     */
+    async parseAndHandleRecommendations(response) {
+        const recommendationMatch = response.match(/<recommendation>([\s\S]*?)<\/recommendation>/);
+
+        if (!recommendationMatch) {
+            return {hasRecommendations: false, cleanResponse: response};
+        }
+
+        const recommendationContent = recommendationMatch[1];
+        const titleMatch = recommendationContent.match(/<title>(.*?)<\/title>/);
+        const descriptionMatch = recommendationContent.match(/<description>(.*?)<\/description>/);
+        const actionsMatch = recommendationContent.match(/<actions>([\s\S]*?)<\/actions>/);
+
+        const title = titleMatch ? titleMatch[1].trim() : 'Recommendation';
+        const description = descriptionMatch ? descriptionMatch[1].trim() : 'The system has a suggestion for you.';
+        const actionsText = actionsMatch ? actionsMatch[1].trim() : '';
+
+        // Parse actions into array
+        const actions = actionsText
+            .split('\n')
+            .map(line => line.replace(/^-\s*/, '').trim())
+            .filter(line => line.length > 0);
+
+        // If no valid actions found, skip recommendations
+        if (actions.length === 0) {
+            console.log(this.ui.theme.muted('ℹ️  Found recommendation tags but no valid actions, skipping...'));
+            const cleanResponse = response.replace(/<recommendation>[\s\S]*?<\/recommendation>/, '').trim();
+            return {hasRecommendations: false, cleanResponse};
+        }
+
+        // Remove recommendation tags from response
+        const cleanResponse = response.replace(/<recommendation>[\s\S]*?<\/recommendation>/, '').trim();
+
+        // Stop any existing spinner before showing recommendation
+        this.ui.stopSpinner(true, '');
+
+        // Show recommendation to user
+        this.ui.showRecommendation(title, description, actions);
+
+        try {
+            // Ask for user confirmation with better error handling
+            const userChoice = await this.ui.askConfirmation(
+                'Would you like me to execute these recommended actions?',
+                ['yes', 'no', 'show details']
+            );
+
+            console.log(`\n✅ You selected: ${userChoice}`);
+
+            if (userChoice === 'show details') {
+                this.ui.showInfo('Recommendation Details',
+                    `${description}\n\nActions:\n${actions.map((a, i) => `${i + 1}. ${a}`).join('\n')}`
+                );
+
+                const finalChoice = await this.ui.askConfirmation(
+                    'Execute these actions?',
+                    ['yes', 'no']
+                );
+
+                if (finalChoice === 'yes') {
+                    await this.executeRecommendedActions(actions);
+                } else {
+                    console.log(this.ui.theme.info('ℹ️  Recommendations skipped by user choice.'));
+                }
+            } else if (userChoice === 'yes') {
+                await this.executeRecommendedActions(actions);
+            } else {
+                console.log(this.ui.theme.info('ℹ️  Recommendations skipped by user choice.'));
+            }
+        } catch (error) {
+            console.log(this.ui.theme.error(`❌ Error handling recommendation: ${error.message}`));
+            console.log(this.ui.theme.info('ℹ️  Skipping recommendations due to error.'));
+        }
+
+        return {hasRecommendations: true, cleanResponse};
+    }
+
+    /**
+     * Execute recommended actions based on user confirmation
+     */
+    async executeRecommendedActions(actions) {
+        console.log(this.ui.theme.success('\n✅ Executing recommended actions...\n'));
+
+        for (let i = 0; i < actions.length; i++) {
+            const action = actions[i];
+            console.log(this.ui.theme.command(`[${i + 1}/${actions.length}] ${action}`));
+
+            try {
+                // Convert action description to LLM prompt for execution
+                const result = await this.chat(`Please execute this action: ${action}`, {skipRecommendations: true});
+                console.log(this.ui.theme.muted('   → ' + result.substring(0, 100) + (result.length > 100 ? '...' : '')));
+            } catch (error) {
+                console.log(this.ui.theme.error(`   ✗ Failed: ${error.message}`));
+            }
+        }
+
+        console.log(this.ui.theme.success('\n✅ Recommended actions completed.\n'));
+    }
+
 
     async checkConnection() {
         this.ui.startSpinner('Checking Ollama connection...');
@@ -510,6 +769,89 @@ DO NOT show your thinking process or the think tags, show only the response`;
         }
     }
 
+    isRiskyAction(toolNameOrMessage, params = null) {
+        // If called with a message string (no params), check if the message indicates risky operations
+        if (typeof toolNameOrMessage === 'string' && params === null) {
+            const message = toolNameOrMessage.toLowerCase();
+            const riskyPatterns = [
+                'delete all', 'remove all', 'rm -rf', 'clear all', 'wipe', 'purge all',
+                'delete everything', 'remove everything', 'clear everything',
+                'format', 'sudo', 'chmod 777'
+            ];
+
+            return riskyPatterns.some(pattern => message.includes(pattern));
+        }
+
+        // Original tool-level risk detection
+        const riskyOperations = {
+            'execute_command': (params) => {
+                const cmd = params.command?.toLowerCase() || '';
+                return cmd.includes('rm ') || cmd.includes('delete') ||
+                    cmd.includes('format') || cmd.includes('dd ') ||
+                    cmd.includes('sudo') || cmd.includes('chmod 777') ||
+                    cmd.includes('rm -rf');
+            },
+            'delete_item': () => true,
+            'delete_folder': () => true,
+            'move_item': (params) => {
+                // Moving system files or directories could be risky
+                const src = params.source?.toLowerCase() || '';
+                return src.includes('system') || src.includes('config') || src.includes('.');
+            }
+        };
+
+        const checker = riskyOperations[toolNameOrMessage];
+        return checker ? checker(params) : false;
+    }
+
+// Add method to ask for confirmation before risky operations:
+    async askRiskyOperationConfirmation(message) {
+        this.ui.stopSpinner(true, ''); // Stop thinking spinner
+
+        this.ui.showBox(
+            '⚠️  Risky Operation Warning',
+            `You are about to execute: "${message}"\n\nThis action could be irreversible and may permanently delete files/folders or make system changes.\n\nAre you sure you want to proceed?`,
+            'double'
+        );
+
+        // Use a more specific confirmation for risky operations
+        return new Promise((resolve) => {
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout
+            });
+
+            const askQuestion = () => {
+                rl.question(this.ui.theme.recommendation('❓ Type "yes" to proceed, "no" to cancel: '), (answer) => {
+                    const trimmed = answer.trim().toLowerCase();
+
+                    if (trimmed === 'yes' || trimmed === 'y') {
+                        console.log(this.ui.theme.success('\n✅ Confirmed: Proceeding with risky operation...'));
+                        rl.close();
+                        resolve(true);
+                    } else if (trimmed === 'no' || trimmed === 'n' || trimmed === '') {
+                        console.log(this.ui.theme.warning('\n⚠️  Cancelled: Operation aborted for safety.'));
+                        rl.close();
+                        resolve(false);
+                    } else {
+                        console.log(this.ui.theme.error(`\n❌ Invalid input: "${answer}". Please type "yes" or "no".`));
+                        askQuestion(); // Ask again
+                    }
+                });
+            };
+
+            askQuestion();
+
+            // Handle Ctrl+C gracefully
+            rl.on('SIGINT', () => {
+                console.log(this.ui.theme.warning('\n⚠️  Operation cancelled by user (Ctrl+C)'));
+                rl.close();
+                resolve(false);
+            });
+        });
+    }
+
+
     async selectAvailableModel(models) {
         const readline = require('readline');
         const rl = readline.createInterface({
@@ -573,7 +915,9 @@ DO NOT show your thinking process or the think tags, show only the response`;
         }
     }
 
+
     setupTools() {
+
         this.tools = new Map();
 
         // Execute shell commands
@@ -581,7 +925,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
             description: 'Execute shell commands in the terminal',
             parameters: {command: 'string', timeout: 'number (optional, default 60000ms)'},
             handler: async (params) => {
-                const {command, timeout = 60000} = params; // Increased timeout for long commands
+                const {command, timeout = 5 * 60 * 1000} = params; // Increased timeout for long commands
 
                 this.ui.updateSpinner(`Executing: ${command}`, 'yellow');
 
@@ -646,9 +990,15 @@ DO NOT show your thinking process or the think tags, show only the response`;
         // Create files
         this.tools.set('create_file', {
             description: 'Create or overwrite a file with content',
-            parameters: {filepath: 'string', content: 'string', encoding: 'string (optional, default utf8)'},
+            parameters: {
+                filepath: 'string (or path)',
+                content: 'string (optional, defaults to empty string)',
+                encoding: 'string (optional, default utf8)'
+            },
             handler: async (params) => {
-                const {filepath = '.', content, encoding = 'utf8'} = params;
+                // Accept both 'filepath' and 'path' parameters for compatibility
+                const filepath = params.filepath || params.path || '.';
+                const {content = '', encoding = 'utf8'} = params;
 
                 try {
                     const fullPath = this.validatePath(filepath);
@@ -658,13 +1008,15 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     const dir = path.dirname(fullPath);
                     await fs.mkdir(dir, {recursive: true});
 
-                    await fs.writeFile(fullPath, content, encoding);
+                    // Use empty string if content is undefined/null
+                    const fileContent = content ?? '';
+                    await fs.writeFile(fullPath, fileContent, encoding);
 
                     return {
                         success: true,
                         filepath: fullPath,
-                        size: Buffer.byteLength(content, encoding),
-                        message: `File created successfully`
+                        size: Buffer.byteLength(fileContent, encoding),
+                        message: `File created successfully${fileContent ? '' : ' (empty file)'}`
                     };
                 } catch (error) {
                     return {
@@ -716,6 +1068,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
                 try {
                     const fullPath = this.validatePath(dirpath);
+
                     this.ui.updateSpinner(`Listing directory: ${dirpath}`, 'magenta');
 
                     const entries = await fs.readdir(fullPath, {withFileTypes: true});
@@ -781,6 +1134,8 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     const oldDirectory = this.workingDirectory;
                     this.workingDirectory = fullPath;
                     process.chdir(fullPath);
+
+                    this.updateSystemPrompt();
 
                     return {
                         success: true,
@@ -909,7 +1264,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         };
                     }
 
-                    // Optional safety check
+                    // ONLY check working directory deletion in delete operations
                     const workingDirResolved = path.resolve(this.workingDirectory);
                     if (fullPath === workingDirResolved) {
                         return {
@@ -942,6 +1297,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
                 }
             }
         });
+
         // Move or rename file/directory
         this.tools.set('move_item', {
             description: 'Move or rename a file or directory',
@@ -1311,6 +1667,36 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
+        this.tools.set('debug_state', {
+            description: 'Debug current working directory state',
+            parameters: {},
+            handler: async (params) => {
+                console.log('\n🔍 DEBUG STATE:');
+                console.log('================');
+                console.log('this.workingDirectory:', this.workingDirectory);
+                console.log('process.cwd():', process.cwd());
+                console.log('__dirname:', __dirname);
+
+                // Check if there are any hardcoded paths
+                const systemPaths = this.systemPrompt.match(/\/Users\/[^\s]*/g) || [];
+                console.log('System prompt paths:', systemPaths);
+
+                // Check environment
+                console.log('PWD env var:', process.env.PWD);
+                console.log('OLDPWD env var:', process.env.OLDPWD);
+
+                return {
+                    success: true,
+                    workingDirectory: this.workingDirectory,
+                    processCwd: process.cwd(),
+                    systemPromptPaths: systemPaths,
+                    envPwd: process.env.PWD,
+                    envOldPwd: process.env.OLDPWD
+                };
+            }
+        });
+
+
         // Execute code evaluation (for simple calculations/transformations)
         this.tools.set('evaluate_code', {
             description: 'Evaluate simple JavaScript code (use with caution)',
@@ -1388,9 +1774,9 @@ DO NOT show your thinking process or the think tags, show only the response`;
         };
     }
 
-// Enhanced handleToolCall to support multiple actions
     async handleMultipleToolCalls(response) {
         try {
+
             // First try to parse as multi-action format
             let multiActionMatch = response.match(/\{[^{}]*"actions"[^{}]*\[[\s\S]*?\]\s*\}/);
 
@@ -1470,7 +1856,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
         }
     }
 
-// Rename original handleToolCall to handleSingleToolCall
     async handleSingleToolCall(response) {
         try {
             // Original single tool parsing logic
@@ -1517,8 +1902,22 @@ DO NOT show your thinking process or the think tags, show only the response`;
         }
     }
 
-    async chat(message) {
+
+    async chat(message, options = {}) {
         try {
+            // Check for risky operations BEFORE any processing using existing function
+            if (!options.skipRiskyCheck && this.isRiskyAction(message)) {
+                this.ui.startSpinner('Analyzing request...');
+                const confirmed = await this.askRiskyOperationConfirmation(message);
+
+                if (!confirmed) {
+                    console.log(this.ui.theme.warning('⚠️  Risky operation cancelled by user.'));
+                    return this.ui.formatMessage('Operation cancelled for safety.', 'warning');
+                }
+
+                console.log(this.ui.theme.success('✅ User confirmed risky operation. Proceeding...'));
+            }
+
             this.ui.startSpinner('Thinking...');
 
             const response = await fetch(`${this.baseUrl}/api/chat`, {
@@ -1546,56 +1945,76 @@ DO NOT show your thinking process or the think tags, show only the response`;
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            this.ui.updateSpinner('', 'yellow');
+            this.ui.updateSpinner('Processing response...', 'yellow');
 
             const data = await response.json();
             let assistantMessage = data.message.content;
 
-            // Use the new multi-action handler
+            // Try to execute tools FIRST, before handling recommendations
             const toolResult = await this.handleMultipleToolCalls(assistantMessage);
 
             if (toolResult) {
-                this.ui.updateSpinner('Generating summary...', 'green');
+                // For ANY successful operation, skip recommendations and provide simple summary
+                const wasSuccessful = (toolResult.type === 'single' && toolResult.success) ||
+                    (toolResult.type === 'multiple' && toolResult.results.some(r => r.success));
 
-                // Generate appropriate follow-up based on result type
-                let followUpPrompt;
+                if (wasSuccessful && !options.forceRecommendations) {
+                    // Provide simple summary for successful operations
+                    this.ui.stopSpinner(true, '');
+                } else {
+                    // Only generate recommendations for failed operations or when forced
+                    this.ui.startSpinner('Generating summary...');
 
-                if (toolResult.type === 'multiple') {
-                    followUpPrompt = `Multiple tool execution results:
+                    let followUpPrompt;
+                    if (toolResult.type === 'multiple') {
+                        followUpPrompt = `Multiple tool execution results:
 ${JSON.stringify(toolResult.results, null, 2)}
 
-Please provide a brief, natural language summary of what was accomplished. Be concise and mention any failures. Do not show your thinking process only the response`;
-                } else {
-                    followUpPrompt = `Tool execution result: ${JSON.stringify(toolResult, null, 2)}
+Please provide a brief, natural language summary of what was accomplished. Be concise and mention any failures. If there are logical next steps or recommendations for fixing failures, format them using the recommendation tags. Do not show your thinking process only the response`;
+                    } else {
+                        followUpPrompt = `Tool execution result: ${JSON.stringify(toolResult, null, 2)}
 
-Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result. Do not show your thinking process only the response`;
+Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result. If there are logical next steps or recommendations for fixing issues, format them using the recommendation tags. Do not show your thinking process only the response`;
+                    }
+
+                    const followUpResponse = await fetch(`${this.baseUrl}/api/chat`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            model: this.model,
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: `You are a helpful assistant. Provide a brief summary of the tool execution result(s). Be concise and helpful. Only provide recommendations if there were failures that need to be addressed. Do not show your thinking process only the response`
+                                },
+                                {role: 'user', content: followUpPrompt}
+                            ],
+                            stream: false,
+                            options: {
+                                temperature: 0.3,
+                            }
+                        }),
+                    });
+
+                    const followUpData = await followUpResponse.json();
+                    assistantMessage = followUpData.message.content;
+
+                    // Stop spinner before handling recommendations
+                    this.ui.stopSpinner(true, '');
+
+                    // Handle recommendations from the follow-up response
+                    if (!options.skipRecommendations) {
+                        const followUpRecommendationResult = await this.parseAndHandleRecommendations(assistantMessage);
+                        if (followUpRecommendationResult.hasRecommendations) {
+                            assistantMessage = followUpRecommendationResult.cleanResponse;
+                        }
+                    }
                 }
 
-                const followUpResponse = await fetch(`${this.baseUrl}/api/chat`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                        model: this.model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `You are a helpful assistant. Provide a brief summary of the tool execution result(s). Be concise and helpful. Do not show your thinking process only the response`
-                            },
-                            {role: 'user', content: followUpPrompt}
-                        ],
-                        stream: false,
-                        options: {
-                            temperature: 0.3,
-                        }
-                    }),
-                });
-
-                const followUpData = await followUpResponse.json();
-                assistantMessage = followUpData.message.content;
             } else {
-                // Retry logic for action requests
+                // No tools were executed, check if this was an action request
                 if (this.seemsLikeActionRequest(message) && !this.containsToolCall(assistantMessage)) {
                     this.ui.updateSpinner('Retrying with clearer instructions...', 'yellow');
 
@@ -1603,11 +2022,13 @@ Please provide a brief, natural language summary of what was accomplished. Be co
 
 This requires action(s). You MUST use the appropriate tool(s) immediately. 
 
+For deleting all files, use: {"tool": "execute_command", "parameters": {"command": "find . -maxdepth 1 -type f -delete"}}
+For deleting all folders, use: {"tool": "execute_command", "parameters": {"command": "rm -rf */"}}
+
 If multiple actions are needed, use the multi-action format:
 {"actions": [{"tool": "tool_name", "parameters": {...}}, ...]}
 
-If only one action is needed, use:
-{"tool": "tool_name", "parameters": {...}}`;
+Do NOT provide recommendations before executing the action. Execute the action first.`;
 
                     const retryResponse = await fetch(`${this.baseUrl}/api/chat`, {
                         method: 'POST',
@@ -1626,14 +2047,28 @@ If only one action is needed, use:
                     const retryData = await retryResponse.json();
                     const retryToolResult = await this.handleMultipleToolCalls(retryData.message.content);
 
-                    if (retryToolResult) {
-                        assistantMessage = `Successfully executed the requested action(s).`;
-                    } else {
+                    if (!retryToolResult) {
                         assistantMessage = `I understand you want me to: ${message}. However, I had trouble executing the appropriate tools. Please try rephrasing your request.`;
+                    }
+                } else {
+                    // Check for recommendations in the original response if no tools were executed
+                    if (!options.skipRecommendations) {
+                        this.ui.stopSpinner(true, '');
+
+                        const recommendationResult = await this.parseAndHandleRecommendations(assistantMessage);
+                        if (recommendationResult.hasRecommendations) {
+                            assistantMessage = recommendationResult.cleanResponse;
+                        }
+                    } else {
+                        this.ui.stopSpinner(true, '');
                     }
                 }
             }
-            this.ui.stopSpinner(true, '');
+
+            // Ensure spinner is stopped
+            if (this.ui.spinner) {
+                this.ui.stopSpinner(true, '');
+            }
 
             // Update conversation history
             this.conversationHistory.push({role: 'user', content: message});
@@ -1696,7 +2131,12 @@ If only one action is needed, use:
             // Ask for working directory
             await this.selectWorkingDirectory();
 
-            // Check model after setting working directory
+            // Ensure system prompt is set (in case it wasn't set during directory selection)
+            if (!this.systemPrompt) {
+                this.updateSystemPrompt();
+            }
+
+            // Check model after setting working directory and system prompt
             const modelOk = await this.checkModel();
             if (!modelOk) {
                 process.exit(1);
@@ -1837,6 +2277,12 @@ If only one action is needed, use:
 - **models** - List available models
 - **switch** - Change model
 
+## Recommendation System
+When the assistant suggests actions after completing tasks:
+- **y/yes** - Execute the recommended action
+- **n/no** - Skip this recommendation  
+- **skip/s** - Skip all remaining recommendations
+
 ## Examples
 \`\`\`
 "Create a Python script that prints hello world"
@@ -1870,6 +2316,9 @@ If only one action is needed, use:
                     switch (choice) {
                         case '1':
                             console.log(`✅ Using: ${this.workingDirectory}`);
+                            // Set root directory to current directory
+                            this.rootWorkingDirectory = this.workingDirectory;
+                            this.updateSystemPrompt();
                             rl.close();
                             resolve();
                             break;
@@ -1884,7 +2333,12 @@ If only one action is needed, use:
                                         const stats = fs.statSync(resolvedPath);
                                         if (stats.isDirectory()) {
                                             this.workingDirectory = resolvedPath;
+                                            // Set root directory to the selected directory
+                                            this.rootWorkingDirectory = resolvedPath;
                                             process.chdir(resolvedPath);
+
+                                            this.updateSystemPrompt();
+
                                             console.log(`✅ Changed to: ${resolvedPath}`);
                                             await this.saveWorkingDirectoryToConfig();
                                         } else {
@@ -1926,6 +2380,7 @@ If only one action is needed, use:
         });
     }
 
+
     async browseDirectory(startPath, rl, resolve) {
         const fs = require('fs');
         let currentPath = startPath;
@@ -1935,7 +2390,7 @@ If only one action is needed, use:
                 console.log(`\n📁 Current: ${currentPath}`);
 
                 const entries = fs.readdirSync(currentPath, {withFileTypes: true});
-                const directories = entries.filter(entry => entry.isDirectory()).slice(0, 20); // Limit to 20 for readability
+                const directories = entries.filter(entry => entry.isDirectory()).slice(0, 20);
 
                 console.log('\nDirectories:');
                 console.log('0. .. (parent directory)');
@@ -1948,6 +2403,7 @@ If only one action is needed, use:
                 rl.question('\nEnter choice (number, "s" to select, or "q" to quit): ', async (choice) => {
                     if (choice.toLowerCase() === 'q') {
                         console.log('❌ Directory selection cancelled');
+                        this.updateSystemPrompt();
                         rl.close();
                         resolve();
                         return;
@@ -1955,7 +2411,12 @@ If only one action is needed, use:
 
                     if (choice.toLowerCase() === 's') {
                         this.workingDirectory = currentPath;
+                        // Set root directory to the selected directory
+                        this.rootWorkingDirectory = currentPath;
                         process.chdir(currentPath);
+
+                        this.updateSystemPrompt();
+
                         console.log(`✅ Selected: ${currentPath}`);
                         await this.saveWorkingDirectoryToConfig();
                         rl.close();
@@ -1965,11 +2426,9 @@ If only one action is needed, use:
 
                     const choiceNum = parseInt(choice);
                     if (choiceNum === 0) {
-                        // Go to parent directory
                         currentPath = path.dirname(currentPath);
                         await showDirectory();
                     } else if (choiceNum >= 1 && choiceNum <= directories.length) {
-                        // Go to selected directory
                         currentPath = path.join(currentPath, directories[choiceNum - 1].name);
                         await showDirectory();
                     } else {
@@ -1988,6 +2447,7 @@ If only one action is needed, use:
 
         await showDirectory();
     }
+
 
     async saveWorkingDirectoryToConfig() {
         try {
