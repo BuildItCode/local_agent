@@ -601,6 +601,7 @@ class TerminalLLMAgent {
         this.setupTools();
     }
 
+// Updated generateSystemPrompt method:
     generateSystemPrompt() {
         return `You are a helpful AI assistant with access to terminal commands and file system operations.
 You MUST use the available tools to perform actions - DO NOT just explain how to do things.
@@ -622,21 +623,20 @@ EXECUTION ORDER:
 1. FIRST: Execute the user's requested action using tools
 2. THEN: Optionally provide recommendations for follow-up actions
 
-EXAMPLES OF WHEN TO RECOMMEND (after execution):
-- After installing packages, suggest creating/updating .gitignore
-- After creating a project, suggest initializing git
-- After running tests that fail, suggest fixes
-- Before destructive operations, suggest backups
-- When security issues are detected, suggest improvements
-
 When the user asks you to:
 - Run commands: IMMEDIATELY use the execute_command tool
 - Create files: IMMEDIATELY use the create_file tool with filepath parameter
 - Read files: IMMEDIATELY use the read_file tool with filepath parameter
 - List directories: IMMEDIATELY use the list_directory tool
-- Navigate directories: IMMEDIATELY use the change_directory tool
-- Append to files: IMMEDIATELY use the append_file tool
-- Delete files: IMMEDIATELY use the delete_item tool for files or execute_command for bulk operations
+- Navigate directories: IMMEDIATELY use the change_directory tool with dirpath parameter
+- Append to files: IMMEDIATELY use the append_file tool with filepath and content parameters
+- Delete files: IMMEDIATELY use the delete_item tool with filepath parameter
+- Delete folders: IMMEDIATELY use the delete_folder tool with folderpath parameter
+- Create directories: IMMEDIATELY use the create_directory tool with dirpath parameter
+- Move/rename items: IMMEDIATELY use the move_item tool with source and destination parameters
+- Copy items: IMMEDIATELY use the copy_item tool with source and destination parameters
+- Search files: IMMEDIATELY use the search_files tool with pattern parameter
+- Replace in files: IMMEDIATELY use the replace_in_file tool with filepath, find, and replace parameters
 
 CRITICAL PATH RULES:
 1. NEVER use absolute paths like "/Users/..." unless explicitly provided by the user
@@ -645,61 +645,112 @@ CRITICAL PATH RULES:
 4. DO NOT generate or hallucinate directory paths
 5. When user says "list files" or "list directory", use {"tool": "list_directory", "parameters": {}}
 6. When creating files, always include "content" parameter (use empty string "" for empty files)
-7. For "delete all files", use execute_command with appropriate shell command like "rm *" or similar
-8. IMPORTANT: Use "filepath" parameter for file operations, not "path"
+7. For bulk operations like "delete all files", use execute_command with appropriate shell commands
+8. IMPORTANT: Use the correct parameter names for each tool
 
-PARAMETER NAMES:
+PARAMETER REFERENCE:
+File Operations:
 - create_file: {"filepath": "filename.txt", "content": "file content"}
 - read_file: {"filepath": "filename.txt"}
 - append_file: {"filepath": "filename.txt", "content": "content to append"}
 - delete_item: {"filepath": "filename.txt"}
+- replace_in_file: {"filepath": "filename.txt", "find": "search text", "replace": "replacement text"}
+- get_info: {"filepath": "filename.txt"}
 
-IMPORTANT:
-1. You have the power to execute these actions directly. When a user asks you to create a file, run a command, or perform any file operation, you MUST use the appropriate tool immediately.
-2. For MULTIPLE actions in one request, respond with an array of tool calls.
-3. Execute actions in the logical order they should be performed.
+Directory Operations:
+- create_directory: {"dirpath": "folder_name"}
+- list_directory: {"dirpath": "folder_name"} (optional, defaults to current directory)
+- change_directory: {"dirpath": "folder_name"}
+- delete_folder: {"folderpath": "folder_name", "recursive": true}
+
+Move/Copy Operations:
+- move_item: {"source": "old_name", "destination": "new_name"}
+- copy_item: {"source": "original", "destination": "copy"}
+
+Search Operations:
+- search_files: {"pattern": "*.txt", "directory": "search_folder"}
+
+Command Execution:
+- execute_command: {"command": "shell command here"}
+
+IMPORTANT NOTES:
+1. Always provide required parameters - tools will fail with clear error messages if parameters are missing
+2. For file operations that could be destructive, the system will ask for user confirmation
+3. Use relative paths whenever possible for security
+4. For MULTIPLE actions in one request, respond with an array of tool calls
+5. Execute actions in the logical order they should be performed
 
 Current working directory: ${this.workingDirectory}
 Operating system: ${os.platform()}
 
-For a SINGLE action, respond with:
-{"tool": "tool_name", "parameters": {"param1": "value1"}}
+RESPONSE FORMATS:
 
-For MULTIPLE actions, respond with:
+For a SINGLE action:
+{"tool": "tool_name", "parameters": {"param1": "value1", "param2": "value2"}}
+
+For MULTIPLE actions:
 {"actions": [
   {"tool": "tool_name1", "parameters": {"param1": "value1"}},
   {"tool": "tool_name2", "parameters": {"param2": "value2"}}
 ]}
 
 CORRECT EXAMPLES:
-- Create file: {"tool": "create_file", "parameters": {"filepath": "test.txt", "content": "Hello World"}}
-- Create 5 files: {"actions": [
-    {"tool": "create_file", "parameters": {"filepath": "text1.txt", "content": ""}},
-    {"tool": "create_file", "parameters": {"filepath": "text2.txt", "content": ""}},
-    {"tool": "create_file", "parameters": {"filepath": "text3.txt", "content": ""}},
-    {"tool": "create_file", "parameters": {"filepath": "text4.txt", "content": ""}},
-    {"tool": "create_file", "parameters": {"filepath": "text5.txt", "content": ""}}
-  ]}
+
+Single file creation:
+{"tool": "create_file", "parameters": {"filepath": "test.txt", "content": "Hello World"}}
+
+Multiple file creation:
+{"actions": [
+  {"tool": "create_file", "parameters": {"filepath": "file1.txt", "content": ""}},
+  {"tool": "create_file", "parameters": {"filepath": "file2.txt", "content": ""}},
+  {"tool": "create_file", "parameters": {"filepath": "file3.txt", "content": ""}}
+]}
+
+Directory operations:
+{"tool": "create_directory", "parameters": {"dirpath": "tests"}}
+{"tool": "change_directory", "parameters": {"dirpath": "tests"}}
+{"tool": "list_directory", "parameters": {}}
+
+File manipulation:
+{"tool": "read_file", "parameters": {"filepath": "config.json"}}
+{"tool": "append_file", "parameters": {"filepath": "log.txt", "content": "New log entry\n"}}
+{"tool": "delete_item", "parameters": {"filepath": "temp.txt"}}
+
+Move and copy:
+{"tool": "move_item", "parameters": {"source": "old_file.txt", "destination": "new_file.txt"}}
+{"tool": "copy_item", "parameters": {"source": "original.txt", "destination": "backup.txt"}}
+
+Search and replace:
+{"tool": "search_files", "parameters": {"pattern": "*.js"}}
+{"tool": "replace_in_file", "parameters": {"filepath": "config.js", "find": "localhost", "replace": "production.com"}}
+
+Complex operations combining multiple tools:
+{"actions": [
+  {"tool": "create_directory", "parameters": {"dirpath": "project"}},
+  {"tool": "change_directory", "parameters": {"dirpath": "project"}},
+  {"tool": "create_file", "parameters": {"filepath": "README.md", "content": "# Project\n\nDescription here"}},
+  {"tool": "create_file", "parameters": {"filepath": "package.json", "content": "{\"name\": \"project\", \"version\": \"1.0.0\"}"}}
+]}
 
 Available tools:
-- execute_command: Run shell commands
-- create_file: Create or overwrite files (always include filepath and content parameters)
-- read_file: Read file contents
-- list_directory: List directory contents (use {} for current directory)
-- change_directory: Change working directory
-- append_file: Append to existing files
-- delete_item: Delete files or directories
-- move_item: Move or rename items
-- copy_item: Copy files or directories
-- create_directory: Create directories
-- replace_in_file: Find and replace in files
-- search_files: Search for files by pattern
-- get_info: Get file/directory information
+- execute_command: Run shell commands (for complex operations, bulk actions)
+- create_file: Create or overwrite files (filepath, content required)
+- read_file: Read file contents (filepath required)
+- list_directory: List directory contents (dirpath optional)
+- change_directory: Change working directory (dirpath required)
+- append_file: Append to existing files (filepath, content required)
+- delete_item: Delete individual files (filepath required)
+- delete_folder: Delete directories (folderpath required, recursive optional)
+- move_item: Move or rename items (source, destination required)
+- copy_item: Copy files or directories (source, destination required)
+- create_directory: Create directories (dirpath required)
+- replace_in_file: Find and replace in files (filepath, find, replace required)
+- search_files: Search for files by pattern (pattern required, directory optional)
+- get_info: Get file/directory information (filepath required)
 
 ALWAYS use tools when requested to perform actions. Never just give instructions.
-DO NOT show your thinking process or the think tags, show only the response`;
+DO NOT show your thinking process or any internal reasoning, show only the tool response.`;
     }
-
 
     // Update system prompt method
     updateSystemPrompt() {
@@ -1062,15 +1113,14 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
 
     setupTools() {
-
         this.tools = new Map();
 
-        // Execute shell commands
+        // ✅ execute_command - OK, has good parameter handling
         this.tools.set('execute_command', {
             description: 'Execute shell commands in the terminal',
             parameters: {command: 'string', timeout: 'number (optional, default 60000ms)'},
             handler: async (params) => {
-                const {command, timeout = 5 * 60 * 1000} = params; // Increased timeout for long commands
+                const {command, timeout = 5 * 60 * 1000} = params;
 
                 this.ui.updateSpinner(`Executing: ${command}`, 'yellow');
 
@@ -1078,11 +1128,10 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     const child = exec(command, {
                         cwd: this.workingDirectory,
                         timeout: timeout,
-                        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large outputs
-                        env: {...process.env, FORCE_COLOR: '0'} // Disable colors for cleaner output
+                        maxBuffer: 10 * 1024 * 1024,
+                        env: {...process.env, FORCE_COLOR: '0'}
                     }, (error, stdout, stderr) => {
                         if (error) {
-                            // Check if it's a timeout error
                             if (error.killed && error.signal === 'SIGTERM') {
                                 resolve({
                                     success: false,
@@ -1112,7 +1161,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         }
                     });
 
-                    // Show progress for long-running commands
                     let progressTimer;
                     let dots = 0;
                     if (command.includes('npx') || command.includes('npm install') || command.includes('git clone')) {
@@ -1125,14 +1173,14 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     child.on('close', () => {
                         if (progressTimer) {
                             clearInterval(progressTimer);
-                            console.log(''); // New line after progress dots
+                            console.log('');
                         }
                     });
                 });
             }
         });
 
-        // Create files
+        // ✅ create_file - FIXED to accept multiple parameter names
         this.tools.set('create_file', {
             description: 'Create or overwrite a file with content',
             parameters: {
@@ -1142,18 +1190,24 @@ DO NOT show your thinking process or the think tags, show only the response`;
             },
             handler: async (params) => {
                 // Accept both 'filepath' and 'path' parameters for compatibility
-                const filepath = params.filepath || params.path || '.';
+                const filepath = params.filepath || params.path || params.filename;
                 const {content = '', encoding = 'utf8'} = params;
+
+                if (!filepath || filepath === '.') {
+                    return {
+                        success: false,
+                        error: 'No valid filepath provided',
+                        filepath: filepath || 'undefined'
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
                     this.ui.updateSpinner(`Creating file: ${filepath}`, 'green');
 
-                    // Create directory if it doesn't exist
                     const dir = path.dirname(fullPath);
                     await fs.mkdir(dir, {recursive: true});
 
-                    // Use empty string if content is undefined/null
                     const fileContent = content ?? '';
                     await fs.writeFile(fullPath, fileContent, encoding);
 
@@ -1173,12 +1227,21 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Read files
+        // ✅ read_file - FIXED to accept multiple parameter names
         this.tools.set('read_file', {
             description: 'Read contents of a file',
-            parameters: {filepath: 'string', encoding: 'string (optional, default utf8)'},
+            parameters: {filepath: 'string (or path)', encoding: 'string (optional, default utf8)'},
             handler: async (params) => {
-                const {filepath = '.', encoding = 'utf8'} = params;
+                const filepath = params.filepath || params.path || params.filename;
+                const {encoding = 'utf8'} = params;
+
+                if (!filepath) {
+                    return {
+                        success: false,
+                        error: 'No filepath provided',
+                        filepath: 'undefined'
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
@@ -1204,7 +1267,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // List directory contents
+        // ✅ list_directory - OK, has good parameter handling
         this.tools.set('list_directory', {
             description: 'List contents of a directory',
             parameters: {dirpath: 'string (optional, default current directory)'},
@@ -1213,7 +1276,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
                 try {
                     const fullPath = this.validatePath(dirpath);
-
                     this.ui.updateSpinner(`Listing directory: ${dirpath}`, 'magenta');
 
                     const entries = await fs.readdir(fullPath, {withFileTypes: true});
@@ -1254,7 +1316,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Change directory
+        // ✅ change_directory - OK, has good parameter handling
         this.tools.set('change_directory', {
             description: 'Change the current working directory',
             parameters: {dirpath: 'string'},
@@ -1298,12 +1360,29 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Append to file
+        // ✅ append_file - FIXED to accept multiple parameter names
         this.tools.set('append_file', {
             description: 'Append content to an existing file',
-            parameters: {filepath: 'string', content: 'string', encoding: 'string (optional, default utf8)'},
+            parameters: {filepath: 'string (or path)', content: 'string', encoding: 'string (optional, default utf8)'},
             handler: async (params) => {
-                const {filepath, content, encoding = 'utf8'} = params;
+                const filepath = params.filepath || params.path || params.filename;
+                const {content, encoding = 'utf8'} = params;
+
+                if (!filepath) {
+                    return {
+                        success: false,
+                        error: 'No filepath provided',
+                        filepath: 'undefined'
+                    };
+                }
+
+                if (!content) {
+                    return {
+                        success: false,
+                        error: 'No content provided to append',
+                        filepath: filepath
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
@@ -1328,20 +1407,14 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        /**
-         * Additional tools for LLM system interaction
-         * Extends the existing tool framework with file management,
-         * search, and system utilities
-         */
-
-// Delete file or directory
+        // ❌ delete_item - FIXED parameter handling and spinner message
         this.tools.set('delete_item', {
             description: 'Delete a file in the working directory. Does NOT delete directories.',
             parameters: {
-                filepath: 'string — Relative or absolute path to the file to delete'
+                filepath: 'string (or path) — Relative or absolute path to the file to delete'
             },
             handler: async (params) => {
-                const filepath = typeof params.filepath === 'string' ? params.filepath : params.item ?? null;
+                const filepath = params.filepath || params.path || params.filename || params.item;
 
                 if (!filepath) {
                     return {
@@ -1357,7 +1430,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     if (stats.isDirectory()) {
                         return {
                             success: false,
-                            error: `Path is a directory: ${fullPath}`,
+                            error: `Path is a directory: ${fullPath}. Use delete_folder for directories.`,
                         };
                     }
 
@@ -1381,14 +1454,15 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
+        // ❌ delete_folder - FIXED parameter handling
         this.tools.set('delete_folder', {
             description: 'Delete a folder (directory) and its contents, if recursive is true.',
             parameters: {
-                folderpath: 'string — Relative or absolute path to the folder to delete',
+                folderpath: 'string (or dirpath) — Relative or absolute path to the folder to delete',
                 recursive: 'boolean (optional) — Whether to delete non-empty folders (default: false)'
             },
             handler: async (params) => {
-                const folderpath = typeof params.folderpath === 'string' ? params.folderpath : params.filepath ?? params.item ?? null;
+                const folderpath = params.folderpath || params.dirpath || params.path || params.filepath || params.item;
                 const recursive = params.recursive === true;
 
                 if (!folderpath) {
@@ -1405,11 +1479,10 @@ DO NOT show your thinking process or the think tags, show only the response`;
                     if (!stats.isDirectory()) {
                         return {
                             success: false,
-                            error: `Path is not a directory: ${fullPath}`,
+                            error: `Path is not a directory: ${fullPath}. Use delete_item for files.`,
                         };
                     }
 
-                    // ONLY check working directory deletion in delete operations
                     const workingDirResolved = path.resolve(this.workingDirectory);
                     if (fullPath === workingDirResolved) {
                         return {
@@ -1443,16 +1516,26 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Move or rename file/directory
         this.tools.set('move_item', {
             description: 'Move or rename a file or directory',
             parameters: {
-                source: 'string',
-                destination: 'string',
+                source: 'string (or from, src)',
+                destination: 'string (or to, dest)',
                 overwrite: 'boolean (optional, default false)'
             },
             handler: async (params) => {
-                const {source, destination, overwrite = false} = params;
+                const source = params.source || params.from || params.src;
+                const destination = params.destination || params.to || params.dest;
+                const {overwrite = false} = params;
+
+                if (!source || !destination) {
+                    return {
+                        success: false,
+                        error: 'Both source and destination paths are required',
+                        source: source || 'undefined',
+                        destination: destination || 'undefined'
+                    };
+                }
 
                 try {
                     const sourcePath = this.validatePath(source);
@@ -1494,16 +1577,27 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Copy file or directory
+        // ❌ copy_item - FIXED parameter validation
         this.tools.set('copy_item', {
             description: 'Copy a file or directory',
             parameters: {
-                source: 'string',
-                destination: 'string',
+                source: 'string (or from, src)',
+                destination: 'string (or to, dest)',
                 overwrite: 'boolean (optional, default false)'
             },
             handler: async (params) => {
-                const {source, destination, overwrite = false} = params;
+                const source = params.source || params.from || params.src;
+                const destination = params.destination || params.to || params.dest;
+                const {overwrite = false} = params;
+
+                if (!source || !destination) {
+                    return {
+                        success: false,
+                        error: 'Both source and destination paths are required',
+                        source: source || 'undefined',
+                        destination: destination || 'undefined'
+                    };
+                }
 
                 try {
                     const sourcePath = this.validatePath(source);
@@ -1552,7 +1646,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Search for files by pattern
+        // ❌ search_files - FIXED parameter validation
         this.tools.set('search_files', {
             description: 'Search for files matching a pattern',
             parameters: {
@@ -1563,6 +1657,15 @@ DO NOT show your thinking process or the think tags, show only the response`;
             },
             handler: async (params) => {
                 const {pattern, directory = '.', maxDepth = 5, type = 'all'} = params;
+
+                if (!pattern) {
+                    return {
+                        success: false,
+                        error: 'No search pattern provided',
+                        pattern: 'undefined'
+                    };
+                }
+
                 const glob = (await import('glob')).glob;
 
                 try {
@@ -1576,7 +1679,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         onlyDirectories: type === 'directory'
                     });
 
-                    // Get details for each match
                     const results = await Promise.all(matches.map(async (match) => {
                         try {
                             const fullPath = path.join(searchPath, match);
@@ -1614,18 +1716,35 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Find and replace in file
+        // ❌ replace_in_file - FIXED parameter validation
         this.tools.set('replace_in_file', {
             description: 'Find and replace text in a file',
             parameters: {
-                filepath: 'string',
+                filepath: 'string (or path)',
                 find: 'string (text or regex pattern)',
                 replace: 'string',
                 isRegex: 'boolean (optional, default false)',
                 flags: 'string (optional regex flags, default "g")'
             },
             handler: async (params) => {
-                const {filepath, find, replace, isRegex = false, flags = 'g'} = params;
+                const filepath = params.filepath || params.path || params.filename;
+                const {find, replace, isRegex = false, flags = 'g'} = params;
+
+                if (!filepath) {
+                    return {
+                        success: false,
+                        error: 'No filepath provided',
+                        filepath: 'undefined'
+                    };
+                }
+
+                if (find === undefined || replace === undefined) {
+                    return {
+                        success: false,
+                        error: 'Both find and replace parameters are required',
+                        filepath: filepath
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
@@ -1638,7 +1757,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         const regex = new RegExp(find, flags);
                         content = content.replace(regex, replace);
                     } else {
-                        // Escape special regex characters for literal replacement
                         const escapedFind = find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         const regex = new RegExp(escapedFind, flags);
                         content = content.replace(regex, replace);
@@ -1646,12 +1764,12 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
                     await fs.writeFile(fullPath, content, 'utf8');
 
-                    const replacements = originalContent.length - content.length;
+                    const replacements = (originalContent.match(new RegExp(isRegex ? find : find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
 
                     return {
                         success: true,
                         filepath: fullPath,
-                        replacements: Math.abs(replacements),
+                        replacements: replacements,
                         message: `Replacement completed successfully`
                     };
                 } catch (error) {
@@ -1664,12 +1782,20 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Get file/directory info
+        // ❌ get_info - FIXED parameter validation
         this.tools.set('get_info', {
             description: 'Get detailed information about a file or directory',
-            parameters: {filepath: 'string'},
+            parameters: {filepath: 'string (or path)'},
             handler: async (params) => {
-                const {filepath} = params;
+                const filepath = params.filepath || params.path || params.filename;
+
+                if (!filepath) {
+                    return {
+                        success: false,
+                        error: 'No filepath provided',
+                        path: 'undefined'
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
@@ -1692,7 +1818,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         isWritable: true
                     };
 
-                    // Additional info for directories
                     if (stats.isDirectory()) {
                         try {
                             const entries = await fs.readdir(fullPath);
@@ -1702,13 +1827,11 @@ DO NOT show your thinking process or the think tags, show only the response`;
                         }
                     }
 
-                    // Additional info for files
                     if (stats.isFile()) {
                         const ext = path.extname(fullPath).toLowerCase();
                         info.extension = ext;
                         info.basename = path.basename(fullPath);
 
-                        // Try to detect file type
                         if (['.txt', '.md', '.log', '.json', '.js', '.py', '.html', '.css'].includes(ext)) {
                             info.likelyText = true;
                         } else if (['.jpg', '.png', '.gif', '.bmp', '.svg'].includes(ext)) {
@@ -1730,35 +1853,7 @@ DO NOT show your thinking process or the think tags, show only the response`;
             }
         });
 
-        // Create directory
-        this.tools.set('create_directory', {
-            description: 'Create a directory (creates parent directories if needed)',
-            parameters: {dirpath: 'string'},
-            handler: async (params) => {
-                const {dirpath} = params;
-
-                try {
-                    const fullPath = this.validatePath(dirpath);
-                    this.ui.updateSpinner(`Creating directory: ${dirpath}`, 'green');
-
-                    await fs.mkdir(fullPath, {recursive: true});
-
-                    return {
-                        success: true,
-                        directory: fullPath,
-                        message: 'Directory created successfully'
-                    };
-                } catch (error) {
-                    return {
-                        success: false,
-                        error: error.message,
-                        directory: dirpath
-                    };
-                }
-            }
-        });
-
-// Get environment variables
+        // Get environment variables
         this.tools.set('get_env', {
             description: 'Get environment variables',
             parameters: {
@@ -1840,7 +1935,6 @@ DO NOT show your thinking process or the think tags, show only the response`;
                 };
             }
         });
-
 
         // Execute code evaluation (for simple calculations/transformations)
         this.tools.set('evaluate_code', {
