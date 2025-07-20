@@ -421,11 +421,16 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
     // Validate file path to prevent directory traversal
     validatePath(filepath) {
-        const resolvedPath = path.resolve(this.workingDirectory, filepath);
+        const safePath = filepath ?? '.';
+        const resolvedPath = path.resolve(this.workingDirectory, safePath);
         const workingDirResolved = path.resolve(this.workingDirectory);
 
         if (!resolvedPath.startsWith(workingDirResolved)) {
-            throw new Error(`Access denied: Path ${filepath} is outside working directory`);
+            throw new Error(`Access denied: Path ${safePath} is outside the working directory`);
+        }
+
+        if (resolvedPath === workingDirResolved) {
+            throw new Error(`Refusing to delete the working directory itself`);
         }
 
         return resolvedPath;
@@ -831,42 +836,112 @@ DO NOT show your thinking process or the think tags, show only the response`;
 
 // Delete file or directory
         this.tools.set('delete_item', {
-            description: 'Delete a file or directory (use with caution)',
+            description: 'Delete a file in the working directory. Does NOT delete directories.',
             parameters: {
-                filepath: 'string',
-                recursive: 'boolean (optional, default false for directories)'
+                filepath: 'string — Relative or absolute path to the file to delete'
             },
             handler: async (params) => {
-                const {filepath = '.', recursive = false} = params;
+                const filepath = typeof params.filepath === 'string' ? params.filepath : params.item ?? null;
+
+                if (!filepath) {
+                    return {
+                        success: false,
+                        error: 'No filepath provided'
+                    };
+                }
 
                 try {
                     const fullPath = this.validatePath(filepath);
                     const stats = await fs.stat(fullPath);
 
-                    this.ui.updateSpinner(`Deleting: ${filepath}`, 'red');
-
                     if (stats.isDirectory()) {
-                        await fs.rm(fullPath, {recursive, force: true});
-                    } else {
-                        await fs.unlink(fullPath);
+                        return {
+                            success: false,
+                            error: `Path is a directory: ${fullPath}`,
+                        };
                     }
+
+                    this.ui.updateSpinner(`Deleting file: ${filepath}`, 'red');
+
+                    await fs.unlink(fullPath);
 
                     return {
                         success: true,
                         filepath: fullPath,
-                        type: stats.isDirectory() ? 'directory' : 'file',
-                        message: `${stats.isDirectory() ? 'Directory' : 'File'} deleted successfully`
+                        type: 'file',
+                        message: 'File deleted successfully'
                     };
                 } catch (error) {
                     return {
                         success: false,
-                        error: error.message,
-                        filepath: filepath
+                        filepath,
+                        error: error.message
                     };
                 }
             }
         });
 
+        this.tools.set('delete_folder', {
+            description: 'Delete a folder (directory) and its contents, if recursive is true.',
+            parameters: {
+                folderpath: 'string — Relative or absolute path to the folder to delete',
+                recursive: 'boolean (optional) — Whether to delete non-empty folders (default: false)'
+            },
+            handler: async (params) => {
+                const folderpath = typeof params.folderpath === 'string' ? params.folderpath : params.filepath ?? params.item ?? null;
+                const recursive = params.recursive === true;
+
+                if (!folderpath) {
+                    return {
+                        success: false,
+                        error: 'No folder path provided'
+                    };
+                }
+
+                try {
+                    const fullPath = this.validatePath(folderpath);
+                    const stats = await fs.stat(fullPath);
+
+                    if (!stats.isDirectory()) {
+                        return {
+                            success: false,
+                            error: `Path is not a directory: ${fullPath}`,
+                        };
+                    }
+
+                    // Optional safety check
+                    const workingDirResolved = path.resolve(this.workingDirectory);
+                    if (fullPath === workingDirResolved) {
+                        return {
+                            success: false,
+                            error: 'Refusing to delete the root working directory'
+                        };
+                    }
+
+                    this.ui.updateSpinner(`Deleting folder: ${folderpath}`, 'red');
+
+                    if (recursive) {
+                        await fs.rm(fullPath, {recursive: true, force: true});
+                    } else {
+                        await fs.rmdir(fullPath);
+                    }
+
+                    return {
+                        success: true,
+                        folderpath: fullPath,
+                        recursive,
+                        message: `Folder deleted ${recursive ? 'recursively' : ''} successfully`
+                    };
+                } catch (error) {
+                    return {
+                        success: false,
+                        folderpath,
+                        recursive,
+                        error: error.message
+                    };
+                }
+            }
+        });
         // Move or rename file/directory
         this.tools.set('move_item', {
             description: 'Move or rename a file or directory',
