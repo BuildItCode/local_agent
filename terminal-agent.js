@@ -6,26 +6,347 @@ const path = require('path');
 const os = require('os');
 const readline = require('readline');
 
+// UI Enhancement imports
+const chalk = require('chalk');
+const marked = require('marked');
+const TerminalRenderer = require('marked-terminal');
+const ora = require('ora');
+const boxen = require('boxen');
+const gradient = require('gradient-string');
+const figlet = require('figlet');
+const Table = require('cli-table3');
+
+// Configure marked to use terminal renderer
+marked.setOptions({
+    renderer: new TerminalRenderer({
+        firstHeading: chalk.bold.underline.cyan,
+        heading: chalk.bold.cyan,
+        code: chalk.gray,
+        blockquote: chalk.italic.gray,
+        codespan: chalk.yellow,
+        strong: chalk.bold,
+        em: chalk.italic,
+        link: chalk.blue.underline,
+        href: chalk.blue.underline,
+        list: (body) => body,
+        listitem: (text) => `  ${chalk.green('•')} ${text}\n`,
+        paragraph: (text) => text + '\n',
+        table: (header, body) => {
+            return chalk.gray(header + body);
+        }
+    })
+});
+
 // Handle fetch for older Node.js versions
 let fetch;
 if (typeof globalThis.fetch === 'undefined') {
     try {
         fetch = require('node-fetch');
     } catch (error) {
-        console.error('❌ node-fetch is required for Node.js < 18. Install with: npm install node-fetch');
+        console.error(chalk.red('❌ node-fetch is required for Node.js < 18. Install with: npm install node-fetch'));
         process.exit(1);
     }
 } else {
     fetch = globalThis.fetch;
 }
 
+// Terminal UI Helper Class
+class TerminalUI {
+    constructor() {
+        this.spinner = null;
+        this.theme = {
+            primary: chalk.cyan,
+            secondary: chalk.magenta,
+            success: chalk.green,
+            error: chalk.red,
+            warning: chalk.yellow,
+            info: chalk.blue,
+            muted: chalk.gray,
+            highlight: chalk.bgCyan.black,
+            prompt: chalk.bold.cyan,
+            command: chalk.yellow,
+            output: chalk.white,
+            file: chalk.green,
+            directory: chalk.blue.bold,
+            tool: chalk.magenta
+        };
+    }
+
+    async showBanner() {
+        console.clear();
+        const banner = figlet.textSync('LLM Agent', {
+            font: 'ANSI Shadow',
+            horizontalLayout: 'default',
+            verticalLayout: 'default'
+        });
+
+        console.log(gradient.rainbow(banner));
+        console.log(chalk.gray('─'.repeat(process.stdout.columns || 80)));
+        console.log(this.theme.muted('  Powered by Ollama • Terminal AI Assistant\n'));
+    }
+
+    formatMessage(text, style = 'default') {
+        // Strip think tags and collapse newlines
+        text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        text = text.replace(/\n{3,}/g, '\n\n');
+
+        const useMarkdown = text.includes('#') || text.includes('*') || text.includes('```');
+
+        const formatted = useMarkdown
+            ? marked.parse(text)
+            : text; // Use plain text
+
+        switch (style) {
+            case 'assistant':
+                return this.theme.output(formatted);
+            case 'user':
+                return this.theme.prompt(text);
+            case 'error':
+                return this.theme.error(formatted);
+            case 'success':
+                return this.theme.success(formatted);
+            default:
+                return formatted;
+        }
+    }
+
+
+    showBox(title, content, style = 'single') {
+        const boxContent = boxen(content, {
+            title: title,
+            titleAlignment: 'center',
+            padding: 1,
+            margin: 1,
+            borderStyle: style,
+            borderColor: 'cyan'
+        });
+        console.log(boxContent);
+    }
+
+    startSpinner(text) {
+        if (this.spinner && this.spinner.isSpinning) {
+            this.spinner.text = text;
+            return;
+        }
+
+        this.spinner = ora({
+            text,
+            spinner: 'dots',
+            discardStdin: false,
+        }).start();
+    }
+
+    updateSpinner(text, color = 'cyan') {
+        if (this.spinner && this.spinner.isSpinning) {
+            this.spinner.color = color;
+            this.spinner.text = text;
+        }
+    }
+
+    stopSpinner(success = true, text = '') {
+        if (!this.spinner) return;
+
+        if (this.spinner.isSpinning) {
+            if (success) {
+                this.spinner.succeed(text);
+            } else {
+                this.spinner.fail(text);
+            }
+        }
+
+        this.spinner = null;
+    }
+
+    formatFileList(items) {
+        const table = new Table({
+            head: ['Type', 'Name', 'Size', 'Modified'],
+            style: {
+                head: ['cyan'],
+                border: ['gray']
+            },
+            colWidths: [10, 40, 15, 25]
+        });
+
+        items.forEach(item => {
+            const icon = item.type === 'directory' ? '📁' : '📄';
+            const name = item.type === 'directory'
+                ? this.theme.directory(item.name)
+                : this.theme.file(item.name);
+            const size = item.type === 'directory' ? '-' : this.formatBytes(item.size);
+            const modified = new Date(item.modified).toLocaleString();
+
+            table.push([icon, name, size, modified]);
+        });
+
+        return table.toString();
+    }
+
+    formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    formatToolExecution(toolName, params, result) {
+        const lines = [];
+
+        lines.push(this.theme.tool(`\n╭─ Tool: ${toolName}`));
+
+        if (Object.keys(params).length > 0) {
+            lines.push(this.theme.muted('├─ Parameters:'));
+            Object.entries(params).forEach(([key, value]) => {
+                lines.push(this.theme.muted(`│  ${key}: ${this.theme.command(value)}`));
+            });
+        }
+
+        if (result.success) {
+            lines.push(this.theme.success('├─ Status: ✓ Success'));
+            if (result.message) {
+                lines.push(this.theme.muted(`├─ ${result.message}`));
+            }
+
+            // Special formatting for command output
+            if (result.stdout && result.stdout.trim()) {
+                lines.push(this.theme.muted('├─ Output:'));
+                result.stdout.trim().split('\n').forEach(line => {
+                    lines.push(this.theme.output(`│  ${line}`));
+                });
+            }
+        } else {
+            lines.push(this.theme.error('├─ Status: ✗ Failed'));
+            if (result.error) {
+                lines.push(this.theme.error(`├─ Error: ${result.error}`));
+            }
+            if (result.stderr && result.stderr.trim()) {
+                lines.push(this.theme.error('├─ Error output:'));
+                result.stderr.trim().split('\n').forEach(line => {
+                    lines.push(this.theme.error(`│  ${line}`));
+                });
+            }
+        }
+
+        lines.push(this.theme.tool('╰─────\n'));
+
+        return lines.join('\n');
+    }
+
+    showWelcome(model, workingDir) {
+        const tips = [
+            'Create files and folders with natural language',
+            'Run shell commands by just asking',
+            'Search for files using patterns',
+            'Get help anytime by typing "help"',
+            'Use markdown in your prompts for better formatting'
+        ];
+
+        const welcomeBox = boxen(
+            `${this.theme.primary('Model:')} ${model}\n` +
+            `${this.theme.primary('Directory:')} ${workingDir}\n\n` +
+            `${this.theme.secondary('Quick Tips:')}\n` +
+            tips.map(tip => `  ${this.theme.success('•')} ${tip}`).join('\n'),
+            {
+                title: '🚀 Ready to assist!',
+                titleAlignment: 'center',
+                padding: 1,
+                borderStyle: 'round',
+                borderColor: 'cyan'
+            }
+        );
+
+        console.log(welcomeBox);
+    }
+
+    formatCode(code, language = 'javascript') {
+        const lines = code.split('\n');
+        const formatted = lines.map((line, i) => {
+            const lineNum = this.theme.muted(String(i + 1).padStart(3, ' ') + ' │ ');
+            return lineNum + this.theme.command(line);
+        }).join('\n');
+
+        return boxen(formatted, {
+            title: `📝 ${language}`,
+            titleAlignment: 'left',
+            padding: 0,
+            borderStyle: 'single',
+            borderColor: 'gray'
+        });
+    }
+
+    showProgress(current, total, label = 'Progress') {
+        const width = 30;
+        const percentage = Math.round((current / total) * 100);
+        const filled = Math.round((current / total) * width);
+        const empty = width - filled;
+
+        const bar = `${this.theme.success('█'.repeat(filled))}${this.theme.muted('░'.repeat(empty))}`;
+        const text = `${label}: ${bar} ${percentage}%`;
+
+        process.stdout.write('\r' + text);
+
+        if (current >= total) {
+            console.log(''); // New line when complete
+        }
+    }
+
+    showError(title, message) {
+        this.showBox(
+            `❌ ${title}`,
+            this.theme.error(message),
+            'double'
+        );
+    }
+
+    showSuccess(title, message) {
+        this.showBox(
+            `✅ ${title}`,
+            this.theme.success(message),
+            'round'
+        );
+    }
+
+    showInfo(title, message) {
+        this.showBox(
+            `ℹ️  ${title}`,
+            this.theme.info(message),
+            'single'
+        );
+    }
+
+    showModelInfo(models) {
+        const modelData = models.map((model, index) => {
+            const sizeGB = (model.size / 1024 / 1024 / 1024).toFixed(1);
+            let description = '';
+
+            if (model.name.includes('code')) {
+                description = '🔧 Best for coding';
+            } else if (model.name.includes('llama')) {
+                description = '💬 Great for conversations';
+            } else if (model.name.includes('mistral')) {
+                description = '⚡ Fast and efficient';
+            } else if (model.name.includes('phi')) {
+                description = '🏃 Lightweight';
+            } else if (model.name.includes('gemma')) {
+                description = '🏢 Google\'s model';
+            }
+
+            return `${this.theme.primary(`${index + 1}.`)} ${this.theme.secondary(model.name)} (${sizeGB}GB)\n   ${description}`;
+        }).join('\n\n');
+
+        this.showBox('Available Models', modelData, 'double');
+    }
+}
+
+
 class TerminalLLMAgent {
     constructor(options = {}) {
         this.baseUrl = options.baseUrl || 'http://localhost:11434';
-        this.model = options.model || this.loadConfigModel() || null; // No default model
+        this.model = options.model || this.loadConfigModel() || null;
         this.workingDirectory = options.workingDirectory || process.cwd();
         this.conversationHistory = [];
         this.maxHistoryLength = options.maxHistoryLength || 20;
+        this.ui = new TerminalUI();
 
         // System prompt for terminal-aware assistant
         this.systemPrompt = `You are a helpful AI assistant with access to terminal commands and file system operations. 
@@ -78,7 +399,8 @@ You: {"actions": [
   {"tool": "change_directory", "parameters": {"dirpath": "my-project"}},
   {"tool": "create_file", "parameters": {"filepath": "README.md", "content": "# My Project\n\nProject description here."}}
 ]}
-ALWAYS use tools when requested to perform actions. Never just give instructions.`;
+ALWAYS use tools when requested to perform actions. Never just give instructions.
+DO NOT show your thinking process or the think tags, show only the response`;
 
         this.setupTools();
     }
@@ -92,7 +414,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             const config = JSON.parse(fs.readFileSync('agent-config.json', 'utf8'));
             return config.model;
         } catch (error) {
-            console.warn('⚠️  Could not load config file:', error.message);
+            console.warn(this.ui.theme.warning('⚠️  Could not load config file:'), error.message);
             return null;
         }
     }
@@ -110,24 +432,30 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
     }
 
     async checkConnection() {
+        this.ui.startSpinner('Checking Ollama connection...');
         try {
             const response = await fetch(`${this.baseUrl}/api/tags`);
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
+            this.ui.stopSpinner(true, "Connected");
             return true;
         } catch (error) {
-            console.error('❌ Cannot connect to Ollama:');
-            console.error(`   ${error.message}`);
-            console.error('\n💡 Make sure Ollama is running:');
-            console.error('   ollama serve');
-            console.error('\n💡 Or run setup again:');
-            console.error('   node setup.js');
+            this.ui.stopSpinner(false, 'Connection failed');
+            this.ui.showError('Cannot connect to Ollama',
+                `${error.message}\n\n` +
+                'Make sure Ollama is running:\n' +
+                '  ollama serve\n\n' +
+                'Or run setup again:\n' +
+                '  node setup.js'
+            );
             return false;
         }
     }
 
     async checkModel() {
+        this.ui.startSpinner('Checking model availability...');
+
         try {
             const response = await fetch(`${this.baseUrl}/api/tags`);
             const data = await response.json();
@@ -137,37 +465,42 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             const modelExists = this.model && models.some(m => m.name === this.model);
 
             if (!this.model || !modelExists) {
+                this.ui.stopSpinner(false, 'Model selection needed');
                 if (!this.model) {
-                    console.log('🤖 No model configured.');
+                    this.ui.showInfo('No Model Configured', 'Please select a model to use');
                 } else {
-                    console.log(`⚠️  Model "${this.model}" not found.`);
+                    this.ui.showError('Model Not Found', `Model "${this.model}" is not available`);
                 }
 
                 if (models.length === 0) {
-                    console.error('\n❌ No models installed.');
-                    console.error('\n💡 Please install a model first:');
-                    console.error('   ollama pull codellama');
-                    console.error('   ollama pull llama2');
-                    console.error('   ollama pull mistral');
-                    console.error('   ollama pull phi');
+                    this.ui.showError('No Models Installed',
+                        'Please install a model first:\n\n' +
+                        '  ollama pull codellama\n' +
+                        '  ollama pull llama2\n' +
+                        '  ollama pull mistral\n' +
+                        '  ollama pull phi'
+                    );
                     return false;
                 }
+
+                this.ui.showModelInfo(models);
 
                 // Let user select from available models
                 const selectedModel = await this.selectAvailableModel(models);
                 if (selectedModel) {
                     this.model = selectedModel;
                     await this.saveModelToConfig(selectedModel);
-                    console.log(`✅ Using model: ${this.model}\n`);
+                    this.ui.showSuccess('Model Selected', `Using model: ${this.model}`);
                     return true;
                 } else {
                     return false;
                 }
             }
-
+            this.ui.stopSpinner(true, `Model ${this.model} ready!`);
             return true;
         } catch (error) {
-            console.error('❌ Could not verify model:', error.message);
+            this.ui.stopSpinner(false, 'Model check failed');
+            this.ui.showError('Could not verify model', error.message);
             return false;
         }
     }
@@ -179,32 +512,13 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             output: process.stdout
         });
 
-        console.log('\n📋 Available models:');
-        models.forEach((model, index) => {
-            const sizeGB = (model.size / 1024 / 1024 / 1024).toFixed(1);
-            let description = '';
-
-            // Add helpful descriptions
-            if (model.name.includes('code')) {
-                description = ' - Best for coding tasks';
-            } else if (model.name.includes('llama2')) {
-                description = ' - Good for general conversation';
-            } else if (model.name.includes('mistral')) {
-                description = ' - Fast and efficient';
-            } else if (model.name.includes('phi')) {
-                description = ' - Lightweight and quick';
-            } else if (model.name.includes('gemma')) {
-                description = ' - Google\'s model';
-            }
-
-            console.log(`   ${index + 1}. ${model.name} (${sizeGB}GB)${description}`);
-        });
+        this.ui.showModelInfo(models);
 
         return new Promise((resolve) => {
             const askForSelection = () => {
                 rl.question(`\nSelect a model (1-${models.length}) or 'q' to quit: `, (answer) => {
                     if (answer.toLowerCase() === 'q') {
-                        console.log('👋 Exiting...');
+                        console.log(this.ui.theme.warning('👋 Exiting...'));
                         rl.close();
                         resolve(null);
                         return;
@@ -213,11 +527,11 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                     const choice = parseInt(answer);
                     if (choice >= 1 && choice <= models.length) {
                         const selectedModel = models[choice - 1].name;
-                        console.log(`🎯 Selected: ${selectedModel}`);
+                        console.log(this.ui.theme.success(`🎯 Selected: ${selectedModel}`));
                         rl.close();
                         resolve(selectedModel);
                     } else {
-                        console.log('❌ Invalid choice. Please try again.');
+                        console.log(this.ui.theme.error('❌ Invalid choice. Please try again.'));
                         askForSelection();
                     }
                 });
@@ -237,7 +551,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 try {
                     config = JSON.parse(fs.readFileSync('agent-config.json', 'utf8'));
                 } catch (error) {
-                    console.warn('⚠️  Could not read existing config, creating new one');
+                    console.warn(this.ui.theme.warning('⚠️  Could not read existing config, creating new one'));
                 }
             }
 
@@ -248,9 +562,9 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             config.lastUpdated = new Date().toISOString();
 
             await require('fs').promises.writeFile('agent-config.json', JSON.stringify(config, null, 2));
-            console.log(`💾 Saved model "${modelName}" to config file`);
+            console.log(this.ui.theme.success(`💾 Saved model "${modelName}" to config file`));
         } catch (error) {
-            console.warn('⚠️  Could not save config file:', error.message);
+            console.warn(this.ui.theme.warning('⚠️  Could not save config file:'), error.message);
         }
     }
 
@@ -264,7 +578,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             handler: async (params) => {
                 const {command, timeout = 60000} = params; // Increased timeout for long commands
 
-                console.log(`🔧 Executing: ${command}`);
+                this.ui.updateSpinner(`Executing: ${command}`, 'yellow');
 
                 return new Promise((resolve) => {
                     const child = exec(command, {
@@ -306,10 +620,12 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                     // Show progress for long-running commands
                     let progressTimer;
+                    let dots = 0;
                     if (command.includes('npx') || command.includes('npm install') || command.includes('git clone')) {
                         progressTimer = setInterval(() => {
-                            process.stdout.write('.');
-                        }, 2000);
+                            dots = (dots + 1) % 4;
+                            this.ui.updateSpinner(`Executing: ${command}${'.'.repeat(dots)}`, 'yellow');
+                        }, 500);
                     }
 
                     child.on('close', () => {
@@ -327,11 +643,11 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             description: 'Create or overwrite a file with content',
             parameters: {filepath: 'string', content: 'string', encoding: 'string (optional, default utf8)'},
             handler: async (params) => {
-                const {filepath, content, encoding = 'utf8'} = params;
+                const {filepath = '.', content, encoding = 'utf8'} = params;
 
                 try {
                     const fullPath = this.validatePath(filepath);
-                    console.log(`📝 Creating file: ${fullPath}`);
+                    this.ui.updateSpinner(`Creating file: ${filepath}`, 'green');
 
                     // Create directory if it doesn't exist
                     const dir = path.dirname(fullPath);
@@ -360,11 +676,11 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             description: 'Read contents of a file',
             parameters: {filepath: 'string', encoding: 'string (optional, default utf8)'},
             handler: async (params) => {
-                const {filepath, encoding = 'utf8'} = params;
+                const {filepath = '.', encoding = 'utf8'} = params;
 
                 try {
                     const fullPath = this.validatePath(filepath);
-                    console.log(`📖 Reading file: ${fullPath}`);
+                    this.ui.updateSpinner(`Reading file: ${filepath}`, 'blue');
 
                     const content = await fs.readFile(fullPath, encoding);
                     const stats = await fs.stat(fullPath);
@@ -395,7 +711,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const fullPath = this.validatePath(dirpath);
-                    console.log(`📁 Listing directory: ${fullPath}`);
+                    this.ui.updateSpinner(`Listing directory: ${dirpath}`, 'magenta');
 
                     const entries = await fs.readdir(fullPath, {withFileTypes: true});
 
@@ -444,7 +760,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const fullPath = this.validatePath(dirpath);
-                    console.log(`📂 Changing directory to: ${fullPath}`);
+                    this.ui.updateSpinner(`Changing directory to: ${dirpath}`, 'cyan');
 
                     await fs.access(fullPath, fs.constants.F_OK);
                     const stats = await fs.stat(fullPath);
@@ -486,7 +802,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const fullPath = this.validatePath(filepath);
-                    console.log(`➕ Appending to file: ${fullPath}`);
+                    this.ui.updateSpinner(`Appending to file: ${filepath}`, 'green');
 
                     await fs.appendFile(fullPath, content, encoding);
                     const stats = await fs.stat(fullPath);
@@ -521,13 +837,13 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 recursive: 'boolean (optional, default false for directories)'
             },
             handler: async (params) => {
-                const {filepath, recursive = false} = params;
+                const {filepath = '.', recursive = false} = params;
 
                 try {
                     const fullPath = this.validatePath(filepath);
                     const stats = await fs.stat(fullPath);
 
-                    console.log(`🗑️  Deleting: ${fullPath}`);
+                    this.ui.updateSpinner(`Deleting: ${filepath}`, 'red');
 
                     if (stats.isDirectory()) {
                         await fs.rm(fullPath, {recursive, force: true});
@@ -566,7 +882,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                     const sourcePath = this.validatePath(source);
                     const destPath = this.validatePath(destination);
 
-                    console.log(`📦 Moving: ${sourcePath} → ${destPath}`);
+                    this.ui.updateSpinner(`Moving: ${source} → ${destination}`, 'yellow');
 
                     // Check if destination exists
                     try {
@@ -617,7 +933,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                     const sourcePath = this.validatePath(source);
                     const destPath = this.validatePath(destination);
 
-                    console.log(`📋 Copying: ${sourcePath} → ${destPath}`);
+                    this.ui.updateSpinner(`Copying: ${source} → ${destination}`, 'blue');
 
                     // Check if destination exists
                     try {
@@ -675,7 +991,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const searchPath = this.validatePath(directory);
-                    console.log(`🔍 Searching for: ${pattern} in ${searchPath}`);
+                    this.ui.updateSpinner(`Searching for: ${pattern}`, 'magenta');
 
                     const matches = await glob(pattern, {
                         cwd: searchPath,
@@ -737,7 +1053,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const fullPath = this.validatePath(filepath);
-                    console.log(`🔄 Replacing in file: ${fullPath}`);
+                    this.ui.updateSpinner(`Replacing in file: ${filepath}`, 'yellow');
 
                     let content = await fs.readFile(fullPath, 'utf8');
                     const originalContent = content;
@@ -783,7 +1099,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                     const fullPath = this.validatePath(filepath);
                     const stats = await fs.stat(fullPath);
 
-                    console.log(`ℹ️  Getting info for: ${fullPath}`);
+                    this.ui.updateSpinner(`Getting info for: ${filepath}`, 'cyan');
 
                     const info = {
                         success: true,
@@ -847,7 +1163,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                 try {
                     const fullPath = this.validatePath(dirpath);
-                    console.log(`📁 Creating directory: ${fullPath}`);
+                    this.ui.updateSpinner(`Creating directory: ${dirpath}`, 'green');
 
                     await fs.mkdir(fullPath, {recursive: true});
 
@@ -876,7 +1192,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             handler: async (params) => {
                 const {name, filter} = params;
 
-                console.log(`🌍 Getting environment variables`);
+                this.ui.updateSpinner('Getting environment variables', 'cyan');
 
                 if (name) {
                     return {
@@ -930,7 +1246,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             handler: async (params) => {
                 const {code, context = {}} = params;
 
-                console.log(`⚡ Evaluating code`);
+                this.ui.updateSpinner('Evaluating code', 'yellow');
 
                 try {
                     // Create a limited scope for evaluation
@@ -954,6 +1270,34 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 }
             }
         });
+
+        // Wrap all tool handlers with UI formatting
+        for (const [name, tool] of this.tools.entries()) {
+            const originalHandler = tool.handler;
+            tool.handler = async (params) => {
+                const result = await originalHandler(params);
+
+                // Format tool output
+                console.log(this.ui.formatToolExecution(name, params, result));
+
+                // Special formatting for specific tools
+                if (name === 'list_directory' && result.success) {
+                    console.log(this.ui.formatFileList(result.items));
+                }
+
+                if (name === 'read_file' && result.success) {
+                    const ext = path.extname(params.filepath);
+                    if (['.js', '.py', '.json', '.html', '.css'].includes(ext)) {
+                        console.log(this.ui.formatCode(result.content, ext.slice(1)));
+                    } else {
+                        // For regular text files, show in a box
+                        this.ui.showInfo(`Content of ${params.filepath}`, result.content);
+                    }
+                }
+
+                return result;
+            };
+        }
 
         // Utility function for formatting bytes
         this.formatBytes = (bytes, decimals = 2) => {
@@ -979,17 +1323,17 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 const multiAction = JSON.parse(multiActionMatch[0]);
 
                 if (multiAction.actions && Array.isArray(multiAction.actions)) {
-                    console.log(`\n🔧 Executing ${multiAction.actions.length} actions...`);
+                    this.ui.showInfo('Multiple Actions', `Executing ${multiAction.actions.length} actions...`);
 
                     const results = [];
                     let allSuccess = true;
 
                     for (let i = 0; i < multiAction.actions.length; i++) {
                         const action = multiAction.actions[i];
-                        console.log(`\n[${i + 1}/${multiAction.actions.length}] ${action.tool}`);
+                        console.log(this.ui.theme.primary(`\n[${i + 1}/${multiAction.actions.length}] ${action.tool}`));
 
                         if (!this.tools.has(action.tool)) {
-                            console.log(`⚠️  Unknown tool: ${action.tool}`);
+                            console.log(this.ui.theme.error(`⚠️  Unknown tool: ${action.tool}`));
                             results.push({
                                 tool: action.tool,
                                 success: false,
@@ -1000,7 +1344,6 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                         }
 
                         const tool = this.tools.get(action.tool);
-                        console.log(`📋 Parameters:`, action.parameters);
 
                         try {
                             const result = await tool.handler(action.parameters);
@@ -1011,9 +1354,6 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
 
                             if (!result.success) {
                                 allSuccess = false;
-                                console.log(`❌ Failed: ${result.error}`);
-                            } else {
-                                console.log(`✅ Success`);
                             }
                         } catch (error) {
                             results.push({
@@ -1022,15 +1362,26 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                                 error: error.message
                             });
                             allSuccess = false;
-                            console.log(`❌ Error: ${error.message}`);
                         }
+                    }
+
+                    const successCount = results.filter(r => r.success).length;
+                    if (allSuccess) {
+                        this.ui.showSuccess('All Actions Completed',
+                            `Successfully executed all ${results.length} actions`);
+                    } else if (successCount > 0) {
+                        this.ui.showInfo('Actions Partially Completed',
+                            `${successCount} of ${results.length} actions succeeded`);
+                    } else {
+                        this.ui.showError('All Actions Failed',
+                            'None of the requested actions could be completed');
                     }
 
                     return {
                         type: 'multiple',
                         success: allSuccess,
                         results: results,
-                        summary: `Executed ${results.length} actions, ${results.filter(r => r.success).length} succeeded`
+                        summary: `Executed ${results.length} actions, ${successCount} succeeded`
                     };
                 }
             }
@@ -1039,7 +1390,7 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             return await this.handleSingleToolCall(response);
 
         } catch (e) {
-            console.log(`⚠️  Error parsing tool calls: ${e.message}`);
+            console.log(this.ui.theme.warning(`⚠️  Error parsing tool calls: ${e.message}`));
             return null;
         }
     }
@@ -1078,8 +1429,6 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             }
 
             const tool = this.tools.get(toolCall.tool);
-            console.log(`\n🤖 Using tool: ${toolCall.tool}`);
-            console.log(`📋 Parameters:`, toolCall.parameters);
 
             const result = await tool.handler(toolCall.parameters);
 
@@ -1093,9 +1442,10 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
         }
     }
 
-// Update the main chat method to use the new handler
     async chat(message) {
         try {
+            this.ui.startSpinner('Thinking...');
+
             const response = await fetch(`${this.baseUrl}/api/chat`, {
                 method: 'POST',
                 headers: {
@@ -1121,6 +1471,8 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
+            this.ui.updateSpinner('', 'yellow');
+
             const data = await response.json();
             let assistantMessage = data.message.content;
 
@@ -1128,6 +1480,8 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
             const toolResult = await this.handleMultipleToolCalls(assistantMessage);
 
             if (toolResult) {
+                this.ui.updateSpinner('Generating summary...', 'green');
+
                 // Generate appropriate follow-up based on result type
                 let followUpPrompt;
 
@@ -1135,11 +1489,11 @@ ALWAYS use tools when requested to perform actions. Never just give instructions
                     followUpPrompt = `Multiple tool execution results:
 ${JSON.stringify(toolResult.results, null, 2)}
 
-Please provide a brief, natural language summary of what was accomplished. Be concise and mention any failures.`;
+Please provide a brief, natural language summary of what was accomplished. Be concise and mention any failures. Do not show your thinking process only the response`;
                 } else {
                     followUpPrompt = `Tool execution result: ${JSON.stringify(toolResult, null, 2)}
 
-Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result.`;
+Please provide a brief, natural language summary of what was accomplished. Be concise and focus on the result. Do not show your thinking process only the response`;
                 }
 
                 const followUpResponse = await fetch(`${this.baseUrl}/api/chat`, {
@@ -1152,7 +1506,7 @@ Please provide a brief, natural language summary of what was accomplished. Be co
                         messages: [
                             {
                                 role: 'system',
-                                content: `You are a helpful assistant. Provide a brief summary of the tool execution result(s). Be concise and helpful.`
+                                content: `You are a helpful assistant. Provide a brief summary of the tool execution result(s). Be concise and helpful. Do not show your thinking process only the response`
                             },
                             {role: 'user', content: followUpPrompt}
                         ],
@@ -1168,7 +1522,7 @@ Please provide a brief, natural language summary of what was accomplished. Be co
             } else {
                 // Retry logic for action requests
                 if (this.seemsLikeActionRequest(message) && !this.containsToolCall(assistantMessage)) {
-                    console.log('\n⚠️  No tool was used. Trying again with explicit instructions...');
+                    this.ui.updateSpinner('Retrying with clearer instructions...', 'yellow');
 
                     const retryPrompt = `The user said: "${message}"
 
@@ -1204,14 +1558,16 @@ If only one action is needed, use:
                     }
                 }
             }
+            this.ui.stopSpinner(true, '');
 
             // Update conversation history
             this.conversationHistory.push({role: 'user', content: message});
             this.conversationHistory.push({role: 'assistant', content: assistantMessage});
 
-            return assistantMessage;
+            return this.ui.formatMessage(assistantMessage, 'assistant');
         } catch (error) {
-            console.error('Error communicating with LLM:', error);
+            this.ui.stopSpinner(false, 'Error occurred');
+            console.error(this.ui.theme.error('Error communicating with LLM:'), error);
             throw error;
         }
     }
@@ -1251,146 +1607,170 @@ If only one action is needed, use:
             this.seemsLikeMultiActionRequest(message);
     }
 
-
     async startInteractiveMode() {
-        // Check connection first
-        const connectionOk = await this.checkConnection();
-        if (!connectionOk) {
-            process.exit(1);
-        }
+        // Return a promise that resolves when the rl interface is closed
+        return new Promise(async (resolve) => {
+            await this.ui.showBanner();
 
-        // Ask for working directory
-        await this.selectWorkingDirectory();
-
-        // Check model after setting working directory
-        const modelOk = await this.checkModel();
-        if (!modelOk) {
-            process.exit(1);
-        }
-
-        const rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout,
-            prompt: `\n💻 [${path.basename(this.workingDirectory)}] > `
-        });
-
-        console.log('🚀 Terminal LLM Agent started!');
-        console.log(`🤖 Using model: ${this.model}`);
-        console.log(`📁 Working in: ${this.workingDirectory}`);
-        console.log('💡 Try commands like:');
-        console.log('   - "Create a hello.txt file with some content"');
-        console.log('   - "List the files in this directory"');
-        console.log('   - "Run npm init to create a package.json"');
-        console.log('   - "Show me the contents of package.json"');
-        console.log('   - Type "exit" to quit');
-        console.log('   - Type "help" for more commands\n');
-
-        rl.prompt();
-
-        rl.on('line', async (input) => {
-            const message = input.trim();
-
-            if (message.toLowerCase() === 'exit') {
-                console.log('👋 Goodbye!');
-                rl.close();
-                return;
+            // Check connection first
+            const connectionOk = await this.checkConnection();
+            if (!connectionOk) {
+                process.exit(1);
             }
 
-            if (message.toLowerCase() === 'clear') {
-                console.clear();
-                rl.prompt();
-                return;
+            // Ask for working directory
+            await this.selectWorkingDirectory();
+
+            // Check model after setting working directory
+            const modelOk = await this.checkModel();
+            if (!modelOk) {
+                process.exit(1);
             }
 
-            if (message.toLowerCase() === 'help') {
-                console.log('\n📋 Available commands:');
-                console.log('   exit          - Quit the agent');
-                console.log('   clear         - Clear the screen');
-                console.log('   pwd           - Show current directory');
-                console.log('   cd            - Change working directory');
-                console.log('   help          - Show this help');
-                console.log('   model         - Show current model');
-                console.log('   models        - List all available models');
-                console.log('   switch        - Switch to a different model');
-                console.log('   history       - Show conversation history');
-                console.log('\n💡 Or just type natural language commands like:');
-                console.log('   "create a Python script that prints hello world"');
-                console.log('   "list all .js files in this directory"');
-                console.log('   "install express with npm"');
-                rl.prompt();
-                return;
-            }
+            this.ui.showWelcome(this.model, this.workingDirectory);
 
-            if (message.toLowerCase() === 'pwd') {
-                console.log(`📍 Current directory: ${this.workingDirectory}`);
-                rl.prompt();
-                return;
-            }
-
-            if (message.toLowerCase() === 'cd') {
-                await this.selectWorkingDirectory();
-                // Update the prompt to reflect new directory
-                rl.setPrompt(`\n💻 [${path.basename(this.workingDirectory)}] > `);
-                rl.prompt();
-                return;
-            }
-
-            if (message.toLowerCase() === 'model') {
-                console.log(`🤖 Current model: ${this.model}`);
-                console.log(`🔗 Ollama URL: ${this.baseUrl}`);
-                rl.prompt();
-                return;
-            }
-
-            if (message.toLowerCase() === 'models') {
-                await this.listAllModels();
-                rl.prompt();
-                return;
-            }
-
-            if (message.toLowerCase() === 'switch') {
-                const switched = await this.switchModel();
-                if (switched) {
-                    console.log(`🔄 Switched to model: ${this.model}`);
+            const rl = readline.createInterface({
+                input: process.stdin,
+                output: process.stdout,
+                prompt: this.ui.theme.prompt(`\n💻 [${path.basename(this.workingDirectory)}] ❯ `),
+                completer: (line) => {
+                    const completions = [
+                        'create', 'delete', 'list', 'read', 'run', 'help',
+                        'exit', 'clear', 'cd', 'pwd', 'model', 'theme', 'models', 'switch', 'history'
+                    ];
+                    const hits = completions.filter(c => c.startsWith(line));
+                    return [hits.length ? hits : completions, line];
                 }
-                rl.prompt();
-                return;
-            }
+            });
 
-            if (message.toLowerCase() === 'history') {
-                console.log('\n📜 Conversation history:');
-                if (this.conversationHistory.length === 0) {
-                    console.log('   No conversation history yet');
-                } else {
-                    this.conversationHistory.slice(-10).forEach((msg, index) => {
-                        const role = msg.role === 'user' ? '👤' : '🤖';
-                        console.log(`   ${role} ${msg.content.substring(0, 80)}${msg.content.length > 80 ? '...' : ''}`);
-                    });
-                }
-                rl.prompt();
-                return;
-            }
-
-            if (message) {
+            rl.on('line', async (input) => {
                 try {
-                    console.log('\n🤔 Thinking...');
-                    const response = await this.chat(message);
-                    console.log(`\n🤖 Assistant: ${response}`);
+                    const message = input.trim();
+
+                    if (message.toLowerCase() === 'exit') {
+                        rl.close(); // This will trigger the 'close' event and resolve the promise.
+                        return;
+                    }
+
+                    if (message.toLowerCase() === 'clear') {
+                        console.clear();
+                        await this.ui.showBanner();
+                        this.ui.showWelcome(this.model, this.workingDirectory);
+                    } else if (message.toLowerCase() === 'help') {
+                        this.showEnhancedHelp();
+                    } else if (message.toLowerCase() === 'pwd') {
+                        this.ui.showInfo('Current Directory', this.workingDirectory);
+                    } else if (message.toLowerCase() === 'cd') {
+                        await this.selectWorkingDirectory();
+                    } else if (message.toLowerCase() === 'model') {
+                        this.ui.showInfo('Model Information', `Current model: ${this.model}\nOllama URL: ${this.baseUrl}`);
+                    } else if (message.toLowerCase() === 'models') {
+                        await this.listAllModels();
+                    } else if (message.toLowerCase() === 'switch') {
+                        const switched = await this.switchModel();
+                        if (switched) this.ui.showSuccess('Model Switched', `Now using model: ${this.model}`);
+                    } else if (message.toLowerCase() === 'history') {
+                        this.showConversationHistory();
+                    } else if (message) {
+                        console.log('\n' + this.ui.theme.info('👤 You:'));
+                        console.log(this.ui.formatMessage(message, 'user'));
+
+                        const response = await this.chat(message);
+
+                        console.log('\n' + this.ui.theme.tool('🤖 Assistant:'));
+                        console.log(response);
+                    }
                 } catch (error) {
-                    console.error(`\n❌ Error: ${error.message}`);
-                    if (error.message.includes('connection refused') || error.message.includes('ECONNREFUSED')) {
-                        console.error('💡 Make sure Ollama is running: ollama serve');
+                    // This will catch errors from ANY command or async operation inside the handler.
+                    this.ui.showError('An error occurred', error.message);
+                    if (error.message.includes('connection refused')) {
+                        console.error(this.ui.theme.warning('💡 Make sure Ollama is running: ollama serve'));
                     }
                 }
-            }
 
+                // This now runs safely, even if an error occurred above.
+                rl.setPrompt(this.ui.theme.prompt(`\n💻 [${path.basename(this.workingDirectory)}] ❯ `));
+                rl.prompt();
+            });
+
+            rl.on('close', () => {
+                // Resolving the promise lets the main `await` finish.
+                resolve();
+            });
+
+            // Show the initial prompt
             rl.prompt();
         });
+    }
 
-        rl.on('close', () => {
-            console.log('\n👋 Terminal LLM Agent stopped.');
-            process.exit(0);
+
+    /**
+     * Display the last N messages from the conversation history.
+     */
+    showConversationHistory(limit = 10) {
+        // Header
+        const header = `📜 Conversation History (last ${limit} entries)`;
+        this.ui.showInfo('History', header);
+
+        const history = this.conversationHistory.slice(-limit);
+        if (history.length === 0) {
+            console.log(this.ui.formatMessage('No conversation history yet.', 'muted'));
+            return;
+        }
+
+        history.forEach((msg, idx) => {
+            const isUser = msg.role === 'user';
+            // Prefix with a colored label
+            const label = isUser
+                ? this.ui.theme.prompt(`You   [${idx + 1}]:`)
+                : this.ui.theme.tool(`Bot   [${idx + 1}]:`);
+
+            // Render message content with appropriate style
+            const content = this.ui.formatMessage(
+                msg.content,
+                isUser ? 'user' : 'assistant'
+            );
+
+            console.log(`${label} ${content}`);
         });
+    }
+
+
+    showEnhancedHelp() {
+        const helpContent = `
+# Terminal LLM Agent Commands
+
+## Basic Commands
+- **exit** - Quit the agent
+- **clear** - Clear the screen  
+- **help** - Show this help
+- **theme** - Change color theme
+
+## File Operations
+- **"create [filename]"** - Create a new file
+- **"delete [filename]"** - Delete a file
+- **"read [filename]"** - Show file contents
+- **"list files"** - List directory contents
+
+## System Commands  
+- **"run [command]"** - Execute shell command
+- **"cd [directory]"** - Change directory
+- **pwd** - Show current directory
+
+## Model Commands
+- **model** - Show current model
+- **models** - List available models
+- **switch** - Change model
+
+## Examples
+\`\`\`
+"Create a Python script that prints hello world"
+"Run npm init and install express"
+"Create a README.md with project description"
+\`\`\`
+        `;
+
+        console.log(this.ui.formatMessage(helpContent));
     }
 
     async selectWorkingDirectory() {
@@ -1434,17 +1814,17 @@ If only one action is needed, use:
                                             await this.saveWorkingDirectoryToConfig();
                                         } else {
                                             console.log('❌ Path is not a directory');
-                                            askForChoice();
+                                            await askForChoice();
                                             return;
                                         }
                                     } else {
                                         console.log('❌ Directory does not exist');
-                                        askForChoice();
+                                        await askForChoice();
                                         return;
                                     }
                                 } catch (error) {
                                     console.log(`❌ Error: ${error.message}`);
-                                    askForChoice();
+                                    await askForChoice();
                                     return;
                                 }
                                 rl.close();
@@ -1543,7 +1923,7 @@ If only one action is needed, use:
                 try {
                     config = JSON.parse(fs.readFileSync('agent-config.json', 'utf8'));
                 } catch (error) {
-                    console.warn('⚠️  Could not read existing config, creating new one');
+                    this.ui.showInfo('⚠️  Could not read existing config, creating new one');
                 }
             }
 
@@ -1553,7 +1933,7 @@ If only one action is needed, use:
             await require('fs').promises.writeFile('agent-config.json', JSON.stringify(config, null, 2));
             console.log(`💾 Saved working directory to config`);
         } catch (error) {
-            console.warn('⚠️  Could not save config file:', error.message);
+            this.ui.showInfo('⚠️  Could not save config file:', error.message);
         }
     }
 
@@ -1607,8 +1987,7 @@ If only one action is needed, use:
     // Method to execute a single command and return result
     async executeCommand(command) {
         try {
-            const response = await this.chat(command);
-            return response;
+            return await this.chat(command);
         } catch (error) {
             throw new Error(`Failed to execute command: ${error.message}`);
         }
