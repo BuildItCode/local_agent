@@ -822,10 +822,14 @@ class FileSystemTools {
      */
     setupTools() {
         // Execute shell command
-        this.addTool('execute_command', {
-            description: 'Execute shell commands in the terminal',
-            parameters: {command: 'string', timeout: 'number (optional, default 60000ms)'},
-            handler: this.executeCommand.bind(this)
+        this.addTool('move_item', {
+            description: 'Move or rename a file or directory. If destination is a directory, item is moved INTO it.',
+            parameters: {
+                source: 'string - Path to file/directory to move',
+                destination: 'string - Target path or directory',
+                overwrite: 'boolean (optional) - Allow overwriting existing files'
+            },
+            handler: this.moveItem.bind(this)
         });
 
         // File operations
@@ -1192,33 +1196,120 @@ class FileSystemTools {
         const {overwrite = false} = params;
 
         const sourcePath = this.pathValidator.validatePath(source);
-        const destPath = this.pathValidator.validatePath(destination);
+        let destPath = this.pathValidator.validatePath(destination);
 
         this.ui.updateSpinner(`Moving: ${source} → ${destination}`, 'yellow');
 
-        // Check if destination exists
+        // Check if source exists
         try {
-            await fs.access(destPath);
-            if (!overwrite) {
-                throw new Error('Destination already exists. Set overwrite=true to replace.');
-            }
+            await fs.access(sourcePath);
         } catch (error) {
-            // If error is not about file existence, rethrow it
-            if (error.code !== 'ENOENT') {
-                throw error;
-            }
-            // Destination doesn't exist, which is fine for our use case
+            throw new Error(`Source path does not exist: ${source}`);
         }
 
-        await fs.rename(sourcePath, destPath);
+        // Get source stats to understand what we're moving
+        const sourceStats = await fs.stat(sourcePath);
+        const sourceIsFile = sourceStats.isFile();
+        const sourceIsDir = sourceStats.isDirectory();
+
+        // Check if destination exists
+        let destExists = false;
+        let destStats = null;
+        try {
+            destStats = await fs.stat(destPath);
+            destExists = true;
+        } catch (error) {
+            // Destination doesn't exist, which is fine
+            destExists = false;
+        }
+
+        // Handle destination logic
+        if (destExists) {
+            if (destStats.isDirectory()) {
+                // If destination is a directory, move source INTO that directory
+                const sourceName = path.basename(sourcePath);
+                destPath = path.join(destPath, sourceName);
+
+                // Check if the final destination already exists
+                try {
+                    await fs.access(destPath);
+                    if (!overwrite) {
+                        throw new Error(`Destination already exists: ${destPath}. Set overwrite=true to replace.`);
+                    }
+                } catch (error) {
+                    if (error.code !== 'ENOENT') {
+                        throw error;
+                    }
+                    // Final destination doesn't exist, which is good
+                }
+            } else {
+                // Destination is a file
+                if (!overwrite) {
+                    throw new Error(`Destination file already exists: ${destination}. Set overwrite=true to replace.`);
+                }
+            }
+        } else {
+            // Destination doesn't exist - check if parent directory exists
+            const destDir = path.dirname(destPath);
+            try {
+                const parentStats = await fs.stat(destDir);
+                if (!parentStats.isDirectory()) {
+                    throw new Error(`Parent path is not a directory: ${destDir}`);
+                }
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    throw new Error(`Parent directory does not exist: ${destDir}`);
+                }
+                throw error;
+            }
+        }
+
+        // Perform the actual move
+        try {
+            await fs.rename(sourcePath, destPath);
+        } catch (error) {
+            // Handle cross-device link error (EXDEV) by copying then deleting
+            if (error.code === 'EXDEV') {
+                if (sourceIsDir) {
+                    await fs.cp(sourcePath, destPath, {recursive: true, force: overwrite});
+                    await fs.rm(sourcePath, {recursive: true, force: true});
+                } else {
+                    await fs.copyFile(sourcePath, destPath);
+                    await fs.unlink(sourcePath);
+                }
+            } else {
+                throw error;
+            }
+        }
 
         return {
             success: true,
             source: sourcePath,
             destination: destPath,
-            message: 'Item moved successfully'
+            type: sourceIsDir ? 'directory' : 'file',
+            message: `${sourceIsDir ? 'Directory' : 'File'} moved successfully from ${sourcePath} to ${destPath}`
         };
     }
+
+    /**
+     * Enhanced helper methods for better parameter handling
+     */
+    getSourcePath(params) {
+        const source = params.source || params.from || params.src || params.filepath;
+        if (!source) {
+            throw new Error('No source path provided. Use "source", "from", "src", or "filepath" parameter.');
+        }
+        return source;
+    }
+
+    getDestinationPath(params) {
+        const destination = params.destination || params.to || params.dest || params.target;
+        if (!destination) {
+            throw new Error('No destination path provided. Use "destination", "to", "dest", or "target" parameter.');
+        }
+        return destination;
+    }
+
 
     async copyItem(params) {
         const source = this.getSourcePath(params);
@@ -1410,22 +1501,6 @@ class FileSystemTools {
         return folderpath;
     }
 
-    getSourcePath(params) {
-        const source = params.source || params.from || params.src;
-        if (!source) {
-            throw new Error('No source path provided');
-        }
-        return source;
-    }
-
-    getDestinationPath(params) {
-        const destination = params.destination || params.to || params.dest;
-        if (!destination) {
-            throw new Error('No destination path provided');
-        }
-        return destination;
-    }
-
     formatBytes(bytes, decimals = 2) {
         if (bytes === 0) return '0 Bytes';
         const k = 1024;
@@ -1435,6 +1510,21 @@ class FileSystemTools {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     }
 }
+
+/**
+ * Updated system prompt section for move operations
+ */
+const moveOperationInstructions = `
+MOVE OPERATIONS CLARIFICATION:
+When user says "move [item] to [folder]" or "move [item] in [folder]":
+- If destination is an existing directory, the item will be moved INTO that directory
+- If destination doesn't exist, it will be treated as the new name/path for the item
+- Use relative paths when possible
+- Examples:
+  * "move file.txt to docs/" → moves file.txt into the docs directory as docs/file.txt
+  * "move file.txt docs/newname.txt" → moves file.txt to docs/newname.txt
+  * "move folder1 folder2/" → moves folder1 into folder2 as folder2/folder1
+`;
 
 /**
  * Main TerminalLLMAgent class - refactored for better maintainability
