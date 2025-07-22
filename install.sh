@@ -809,6 +809,25 @@ class InputHandler {
         return answer;
     }
 
+    /**
+     * Ask for numeric choice from a list
+     */
+    async askChoice(message, max, allowQuit = true) {
+        const quitText = allowQuit ? ' or "q" to quit' : '';
+        let choice;
+
+        do {
+            const answer = await this.question(`${message} (1-${max}${quitText}): `);
+
+            if (allowQuit && answer.toLowerCase() === 'q') {
+                return null;
+            }
+
+            choice = parseInt(answer);
+        } while (isNaN(choice) || choice < 1 || choice > max);
+
+        return choice;
+    }
 
     /**
      * Close the readline interface
